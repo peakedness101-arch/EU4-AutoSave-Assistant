@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EU4 联机自动存档与分析助手 — 新用户使用指南</title>
+  <style>
+    :root {
+      --navy: #0f172a;
+      --navy-2: #172a3f;
+      --teal: #0f766e;
+      --blue: #0284c7;
+      --paper: #f4f7f9;
+      --card: #ffffff;
+      --ink: #172632;
+      --muted: #5f7280;
+      --line: #cbd7de;
+      --warning: #9a5800;
+      --warning-bg: #fff3cd;
+      --danger: #991b1b;
+      --danger-bg: #fee2e2;
+      --success: #166534;
+      --success-bg: #dcfce7;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+      line-height: 1.72;
+    }
+    header {
+      color: #eef8ff;
+      background:
+        radial-gradient(circle at 82% 15%, rgba(2,132,199,.3), transparent 30%),
+        linear-gradient(135deg, #0b1222, #172a3f 70%, #173f4b);
+      padding: 48px 24px 42px;
+      border-bottom: 4px solid var(--teal);
+    }
+    .hero, main, footer { max-width: 1120px; margin: auto; }
+    h1 { margin: 0 0 10px; font-size: clamp(28px, 4vw, 46px); line-height: 1.2; }
+    .subtitle { max-width: 790px; color: #c9dce8; font-size: 18px; }
+    .version-chip {
+      display: inline-block;
+      margin-top: 14px;
+      padding: 7px 12px;
+      color: #b9ffe1;
+      border: 1px solid #3b7b70;
+      border-radius: 7px;
+      background: rgba(15, 118, 110, .18);
+      font-weight: 700;
+    }
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(15, 23, 42, .97);
+      box-shadow: 0 3px 12px rgba(15, 23, 42, .22);
+    }
+    nav .inner {
+      max-width: 1120px;
+      margin: auto;
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      padding: 8px 16px;
+    }
+    nav a {
+      flex: 0 0 auto;
+      color: #deedf5;
+      text-decoration: none;
+      padding: 7px 10px;
+      border-radius: 5px;
+      font-size: 14px;
+    }
+    nav a:hover { background: var(--teal); color: white; }
+    main { padding: 30px 20px 60px; }
+    section { margin: 0 0 42px; scroll-margin-top: 72px; }
+    h2 {
+      margin: 0 0 18px;
+      color: #15364a;
+      font-size: 28px;
+      border-left: 6px solid var(--teal);
+      padding-left: 12px;
+    }
+    h3 { margin: 22px 0 9px; color: #17465c; font-size: 20px; }
+    p { margin: 8px 0 14px; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); }
+    .grid.two { grid-template-columns: repeat(2, 1fr); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 18px;
+      box-shadow: 0 4px 12px rgba(31, 52, 65, .06);
+    }
+    .card h3 { margin-top: 0; }
+    .number {
+      display: inline-grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin-right: 7px;
+      color: white;
+      background: var(--teal);
+      border-radius: 50%;
+      font-weight: 700;
+    }
+    .callout {
+      padding: 15px 17px;
+      margin: 16px 0;
+      border-left: 5px solid var(--blue);
+      border-radius: 7px;
+      background: #e8f4fb;
+    }
+    .callout.warning { border-color: #d58b00; background: var(--warning-bg); color: #6d4300; }
+    .callout.danger { border-color: #c62828; background: var(--danger-bg); color: #721c1c; }
+    .callout.success { border-color: #16a34a; background: var(--success-bg); color: var(--success); }
+    .path {
+      display: block;
+      padding: 10px 12px;
+      margin: 8px 0;
+      overflow-wrap: anywhere;
+      background: #e6edf1;
+      border: 1px solid #c5d0d7;
+      border-radius: 6px;
+      font-family: Consolas, monospace;
+    }
+    .steps { counter-reset: step; list-style: none; padding: 0; margin: 0; }
+    .steps > li {
+      counter-increment: step;
+      position: relative;
+      margin: 0 0 13px;
+      padding: 13px 14px 13px 52px;
+      background: white;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .steps > li::before {
+      content: counter(step);
+      position: absolute;
+      left: 13px;
+      top: 12px;
+      display: grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
+      color: white;
+      background: var(--blue);
+      border-radius: 50%;
+      font-weight: 700;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      border: 1px solid var(--line);
+    }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { color: #244454; background: #dce7ec; }
+    tr:last-child td { border-bottom: 0; }
+    kbd {
+      padding: 2px 6px;
+      border: 1px solid #aebcc5;
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      background: white;
+      font-family: inherit;
+      font-size: .9em;
+    }
+    .mini-map {
+      display: grid;
+      grid-template-columns: 210px 1fr 250px;
+      min-height: 220px;
+      overflow: hidden;
+      border: 1px solid #77909d;
+      border-radius: 9px;
+      color: white;
+      background: #213b49;
+    }
+    .mini-map > div { padding: 16px; }
+    .mini-map .left { background: var(--navy); }
+    .mini-map .world { display: grid; place-items: center; color: #bcd2de; text-align: center; }
+    .mini-map .right { color: var(--ink); background: white; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e8f0f4; font-size: 13px; }
+    ul { padding-left: 22px; }
+    li { margin-bottom: 5px; }
+    footer { padding: 25px 20px 40px; color: var(--muted); border-top: 1px solid var(--line); }
+    @media (max-width: 850px) {
+      .grid, .grid.two { grid-template-columns: 1fr; }
+      .mini-map { grid-template-columns: 1fr; }
+      nav { position: static; }
+    }
+    @media print {
+      nav { display: none; }
+      body { background: white; }
+      .card, .steps > li { break-inside: avoid; box-shadow: none; }
+      section { break-inside: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <h1>EU4 联机自动存档与分析助手</h1>
+      <div class="subtitle">面向第一次使用者的基础功能介绍与操作教程。按照本页顺序操作，即可完成存档读取、地图查看、玩家警告检查、自动存档和多存档对比。</div>
+      <div class="version-chip">推荐并已验证：EU4 v1.37.5.0 Inca（491d）</div>
+    </div>
+  </header>
+
+  <nav>
+    <div class="inner">
+      <a href="#start">快速开始</a>
+      <a href="#layout">界面认识</a>
+      <a href="#read">读取存档</a>
+      <a href="#autosave">自动存档</a>
+      <a href="#map">地图与国家</a>
+      <a href="#alerts">警告</a>
+      <a href="#tools">分析工具</a>
+      <a href="#risk">版本风险</a>
+      <a href="#trouble">排障</a>
+    </div>
+  </nav>
+
+  <main>
+    <section id="start">
+      <h2>一分钟快速开始</h2>
+      <div class="callout success"><strong>程序入口：</strong>第一次使用只需双击下方文件，不要进入 release 文件夹寻找程序。</div>
+      <span class="path">解压目录\EU4_AutoSave_Assistant.exe</span>
+      <ol class="steps">
+        <li><strong>启动助手。</strong>主界面会显示世界地图区域、左侧功能栏和右侧国家/警告栏。</li>
+        <li><strong>检查版本提示。</strong>看到绿色“491d 已验证”即可正常使用全部功能；其它版本请先阅读本页“版本与风险模式”。</li>
+        <li><strong>读取存档。</strong>点击“⚡ 快速读取最新存档”，程序会从游戏存档目录和归档目录中选取最新文件；也可点击“导入存档”手工选择。</li>
+        <li><strong>查看地图。</strong>左键拖动地图、滚轮缩放；单击省份会在右侧切换到省份所属国家。</li>
+        <li><strong>检查警告。</strong>点击“玩家警告总览”，快速确认哪些玩家国家触发了经济警告。</li>
+        <li><strong>需要自动存档时再连接原生桥。</strong>先进入已载入的 EU4 战局，再点击“连接原生桥”，选择周期并用“立即存档”做一次测试。</li>
+      </ol>
+    </section>
+
+    <section id="layout">
+      <h2>认识主界面</h2>
+      <div class="mini-map">
+        <div class="left"><strong>左侧功能栏</strong><br><br>版本与桥状态<br>自动存档控制<br>存档读取<br>分析工具入口</div>
+        <div class="world"><strong>世界政治地图</strong><br>拖动、缩放、点击省份<br><br>左上角按钮可收起/展开功能栏</div>
+        <div class="right"><strong>国家详情与警告</strong><br><br>国库、收支、理念、利息、军队、宗教文化和具体告警</div>
+      </div>
+      <div class="grid" style="margin-top:16px">
+        <div class="card"><h3>左侧功能栏</h3><p>所有常用操作入口都在这里。点击地图左上角的“隐藏功能栏 ◀ / ☰ 功能栏”按钮，可以用同一个按钮关闭或重新打开。</p></div>
+        <div class="card"><h3>中央地图</h3><p>显示国家颜色、被占领省份和军队位置。地图是主工作区，关闭左侧栏或收起右侧栏后会自动扩大。</p></div>
+        <div class="card"><h3>右侧栏</h3><p>分类显示经济、科技点数、发展稳定、陆海军与完整警告信息。陆军和可用人力统一显示实际人数，海军显示舰船数与水手池。右上角“收起 ◀”可折叠，单击地图省份时会自动切换国家。</p></div>
+      </div>
+    </section>
+
+    <section id="read">
+      <h2>读取与解析存档</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>最快方式：快速读取</h3>
+          <ol>
+            <li>点击左侧“⚡ 快速读取最新存档”。</li>
+            <li>程序比较游戏存档目录和归档目录（包括子目录）。</li>
+            <li>自动读取修改时间最新的 <code>.eu4</code> 文件并显示地图。</li>
+          </ol>
+          <p>适合每次存档后立即刷新战局数据。</p>
+        </div>
+        <div class="card">
+          <h3>精确方式：手工导入</h3>
+          <ol>
+            <li>点击“导入存档”。</li>
+            <li>选择一个或多个 <code>.eu4</code> 文件。</li>
+            <li>解析完成后，可在“当前存档”下拉框切换。</li>
+          </ol>
+          <p>适合读取旧存档、他人发送的存档或指定时间点。</p>
+        </div>
+      </div>
+      <div class="callout">较大的后期世界存档需要解析全部国家、军队和省份。当前版本已优化范围扫描并内置 491d 地图缓存；本机真实后期存档完整解析中位数约 0.94 秒、缓存地图约 0.23 秒。解析仍在后台执行，等待左侧状态文字更新即可。</div>
+    </section>
+
+    <section id="autosave">
+      <h2>联机客机自动存档</h2>
+      <div class="callout warning"><strong>适用场景：</strong>你是联机客机，希望在不打开游戏保存菜单的情况下定期生成本地存档。首次使用请先用非关键战局测试。</div>
+      <ol class="steps">
+        <li><strong>先启动 EU4 并进入战局。</strong>应当已完成载入和多人同步；只停留在主菜单时不能保存。</li>
+        <li><strong>点击“连接原生桥”。</strong>连接成功后，左侧会显示日期、载入、同步和存档状态。</li>
+        <li><strong>选择周期。</strong>可选“仅手动”“每 3 个游戏月”“每个游戏年”“每 10 个现实分钟”。</li>
+        <li><strong>先点击一次“立即存档”。</strong>状态栏和“归档与改名”日志显示“存档验证成功”，才说明文件确实落盘且可以解析。</li>
+        <li><strong>需要自动整理时，打开“归档与改名”。</strong>设置战役名、归档目录，并勾选“自动归档并解析桥接生成的存档”。</li>
+      </ol>
+      <h3>成功时会发生什么</h3>
+      <ul>
+        <li>助手在 EU4 主线程请求一次客机本地存档。</li>
+        <li>等待新文件大小稳定，并确认它能被解析。</li>
+        <li>开启自动归档时，文件会经过复制、完整性验证和原子改名，然后移入归档目录。</li>
+        <li>未开启自动归档时，源文件保留在游戏存档目录，但仍会自动完成后续完整解析。</li>
+      </ul>
+      <div class="callout">大型存档写盘时游戏可能短暂停顿。此前 491d 联机实测约半秒，实际长度由存档大小和磁盘速度决定。</div>
+    </section>
+
+    <section id="map">
+      <h2>地图、国家与军队</h2>
+      <table>
+        <thead><tr><th>操作</th><th>效果</th></tr></thead>
+        <tbody>
+          <tr><td>按住鼠标左键拖动</td><td>移动世界地图。</td></tr>
+          <tr><td>滚动鼠标滚轮</td><td>以鼠标位置为中心缩放地图。</td></tr>
+          <tr><td>单击省份</td><td>右侧栏切换到省份原主国家；如当地有军队，会在省份旁显示军队浮窗。</td></tr>
+          <tr><td>单击军队所在省份</td><td>查看当地军队总数、实际兵力、每支军队的团数和兵种；点击浮窗“×”关闭。</td></tr>
+          <tr><td>刷新政治地图</td><td>重新生成当前存档的地图显示。</td></tr>
+          <tr><td>显示完整世界</td><td>把缩放比例恢复到能够看到完整世界的大小。</td></tr>
+        </tbody>
+      </table>
+      <p>省份底色代表原主；被其它国家占领时，会在原主底色上叠加控制方斜纹。彩色圆点表示军队位置，圆点大小仅作快速提示，精确兵力请点击省份查看。</p>
+
+      <h3>国家数据窗口</h3>
+      <ul>
+        <li><strong>国家列表：</strong>集中查看玩家国家的点数、科技、收支、利息、债务、陆军和警告。</li>
+        <li><strong>国家详细分析：</strong>大窗口显示理念组、收入/支出饼图以及 ADM、DIP、MIL 历史用途明细和占比。</li>
+        <li><strong>军队总览：</strong>查看当前国家每支军队的所在地、团数、实际兵力和兵种。</li>
+      </ul>
+    </section>
+
+    <section id="alerts">
+      <h2>玩家国家警告</h2>
+      <ol class="steps">
+        <li>导入存档后，点击左侧“玩家警告总览（数字）”。数字表示当前触发警告的玩家国家数量。</li>
+        <li>窗口中查看严重程度、TAG、玩家名、警告类型和具体说明。</li>
+        <li>双击任意一行，右侧栏会切换到该玩家国家，方便继续查看贷款和监测值。</li>
+      </ol>
+      <table>
+        <thead><tr><th>警告</th><th>触发条件</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td>月支出过高</td><td>上月支出大于上月收入的 2 倍</td><td>当前开支相对收入明显异常，需要检查军队、顾问、要塞等支出。</td></tr>
+          <tr><td>利息压力严重</td><td>上月实际利息大于收入的 80%，并且当前国库小于收入的 100 倍</td><td>债务利息已接近吞噬收入，同时现金储备不足以忽略风险。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warning">警告是辅助判断，不等于作弊结论，也不能替代对战争、事件和特殊玩法的人工分析。</div>
+    </section>
+
+    <section id="tools">
+      <h2>其它分析工具</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>归档与改名</h3>
+          <ul>
+            <li>选择一个或多个待归档存档。</li>
+            <li>设置战役名和目标目录。</li>
+            <li>先点击“预览命名”，确认目标路径。</li>
+            <li>点击“执行安全归档”。</li>
+            <li>操作错误时可尝试“撤销最后一次归档”。</li>
+          </ul>
+          <p><strong>“验证成功后删除源文件（移动）”</strong>会在目标副本验证成功后移除源文件。新手首次操作建议先取消勾选。</p>
+        </div>
+        <div class="card">
+          <h3>多存档对比</h3>
+          <ul>
+            <li>点击“选择多个存档”，至少选择两份。</li>
+            <li>程序要求存档内游戏版本号完全相同，不验证游戏哈希值。</li>
+            <li>选择国家 TAG 和指标，即可比较国库、收支、点数、科技、理念、发展、军队及各项收入/维护支出。</li>
+            <li>下方会保守列出持久事件、旗标和变量变化。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>贷款计算器</h3>
+          <ul>
+            <li>先在地图或国家列表中选择目标国家。</li>
+            <li>点击“从当前选中国家带入”。</li>
+            <li>核对月收入、普通贷款本金、3% 年利率和当前普通贷款数。</li>
+            <li>点击“计算”查看估算最大贷款数、剩余额度和利息压力。</li>
+          </ul>
+          <p>普通贷款本金优先使用存档中的正数估值，其次使用现有普通贷款最大本金，最后才使用手工输入；阶层贷款不作为普通贷款本金样本。</p>
+        </div>
+        <div class="card">
+          <h3>设置与诊断</h3>
+          <ul>
+            <li>EU4 安装目录：用于版本检测、原版图标和原生桥目标验证。</li>
+            <li>EU4 存档目录：游戏实际写入 <code>.eu4</code> 的位置。</li>
+            <li>默认归档目录：助手整理存档的目标根目录。</li>
+            <li>运行与崩溃日志：点击“打开报错日志目录”即可进入 <code>logs</code> 文件夹。</li>
+          </ul>
+          <p>修改后必须点击“保存设置并重新检测版本”。程序会轮转保存运行日志，并为未捕获异常生成独立崩溃报告；需要维护者协助时，请发送整个 <code>logs</code> 文件夹。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="risk">
+      <h2>版本与非 491d 风险模式</h2>
+      <div class="card">
+        <h3>绿色：491d 已验证</h3>
+        <p>当前游戏版本为 EU4 v1.37.5.0 Inca（491d）。自动存档、解析和界面功能均按此版本开发和测试。</p>
+      </div>
+      <div class="callout danger">
+        <strong>红色/黄色：非 491d 高风险模式</strong><br>
+        在“设置与诊断”勾选“允许非 491d 风险模式”后，助手会允许尝试注入原生桥、自动存档、归档和解析。此选项只是放宽版本门控，不代表该版本已经兼容。
+      </div>
+      <ul>
+        <li>可能发生游戏崩溃、联机掉线、存档失败或存档损坏。</li>
+        <li>新版存档结构变化可能导致字段缺失或分析误判。</li>
+        <li>原生桥内部仍会检查定位特征和保存入口；不匹配时会停止，而不会继续盲目调用。</li>
+        <li>首次测试应使用非关键战局，提前备份存档，并关闭“删除源文件”。</li>
+        <li>每一个非 491d 版本都需要单独实机验证；旧版本测试结果不能自动证明新版本安全。</li>
+      </ul>
+    </section>
+
+    <section id="trouble">
+      <h2>常见问题与排查</h2>
+      <table>
+        <thead><tr><th>现象</th><th>优先检查</th></tr></thead>
+        <tbody>
+          <tr><td>提示“未发现正在运行的 eu4.exe”</td><td>先启动游戏；确认设置中的 EU4 安装目录正是当前运行游戏所在目录。</td></tr>
+          <tr><td>原生桥不可用</td><td>确认版本提示、游戏已进入战局、安装目录正确；491d 之外还需主动启用风险模式。</td></tr>
+          <tr><td>点击立即存档后没有文件</td><td>查看“归档与改名”日志；确认游戏已完成载入与多人同步，并检查存档目录是否正确。</td></tr>
+          <tr><td>快速读取的不是预期文件</td><td>它会在游戏存档目录和归档目录中按修改时间选择最新文件；需要指定文件时使用“导入存档”。</td></tr>
+          <tr><td>地图没有更新</td><td>确认解析已完成，然后点击“刷新政治地图”；必要时检查游戏安装目录中的地图文件。</td></tr>
+          <tr><td>某国没有详细数据</td><td>确认选中的存档确实包含该国家；非 491d 存档可能因结构变化缺少字段。</td></tr>
+          <tr><td>军队圆点看不清精确数量</td><td>单击军队所在省份查看浮窗，或打开“军队总览”。</td></tr>
+          <tr><td>归档后找不到原文件</td><td>若启用了移动或自动归档，文件已移入默认归档目录；可查看日志和“撤销最后一次归档”。</td></tr>
+          <tr><td>程序崩溃或功能异常</td><td>重新打开程序，在“设置与诊断”点击“打开报错日志目录”；将 <code>assistant.log</code>、轮转备份和最新的 <code>crash_*.log</code> 一并提供给维护者。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>新用户推荐操作清单</h2>
+      <div class="callout success">
+        ① 确认四个目录 → ② 保存设置 → ③ 导入一份已知存档 → ④ 熟悉地图与警告 → ⑤ 在非关键战局连接原生桥 → ⑥ 手动触发一次“立即存档” → ⑦ 最后再开启周期和自动归档。
+      </div>
+      <p>程序的分析、配置、数据库和归档均保存在本机，不会自动上传存档。请始终保留关键战局的独立备份。</p>
+    </section>
+  </main>
+
+  <footer>
+    <strong>EU4 联机自动存档与分析助手</strong><br>
+    指南对应当前发行版。程序入口位于本指南同级目录：EU4_AutoSave_Assistant.exe
+  </footer>
+</body>
+</html>

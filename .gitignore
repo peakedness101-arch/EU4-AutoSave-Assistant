@@ -1,0 +1,30 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Downloaded build toolchain
+.tools/
+
+# Generated build and release output
+build/
+dist/
+release/
+*.spec
+
+# Runtime state and user data
+logs/
+config/
+archives/
+data/assistant.sqlite3*
+data/province_index.json
+data/map_cache/
+*.eu4
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

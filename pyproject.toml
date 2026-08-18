@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eu4-mp-assistant"
+version = "1.1.0"
+description = "EU4 491d multiplayer client autosave, archive, and save-analysis assistant"
+requires-python = ">=3.11"
+dependencies = [
+  "PySide6>=6.8,<7",
+  "Pillow>=10,<12",
+  "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "capstone>=5,<6",
+  "pefile>=2024.8",
+  "pytest>=8,<9",
+  "pyinstaller>=6,<7",
+]
+
+[project.scripts]
+eu4-assistant = "eu4_assistant.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
