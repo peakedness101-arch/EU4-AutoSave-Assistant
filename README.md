@@ -1,6 +1,6 @@
 # 纯ai生成代码
 
-# AI only，chinese only。If anyone needs other languages, please let me know.
+# coding by AI，chinese only。If anyone needs other languages, please let me know.
 
 # EU4 联机自动存档与分析助手
 
