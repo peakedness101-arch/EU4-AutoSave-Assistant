@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
+import os
 import re
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -13,16 +16,22 @@ from .models import (
     PlayerCountry,
     SaveRecord,
 )
+from .config import PROJECT_ROOT
 
 
 class SaveParseError(ValueError):
     pass
 
 
+LOGGER = logging.getLogger("eu4_assistant.parser")
+_RAKALY_TIMEOUT_SECONDS = 180
+_MAX_MELTED_SAVE_BYTES = 512 * 1024 * 1024
 _TAG_RE = re.compile(rb"^[A-Z0-9]{3}$")
 _BRACE_OR_QUOTE_RE = re.compile(rb'[{}"]')
-_COUNTRY_HEADER_RE = re.compile(rb"(?m)^\t([A-Z0-9]{3})=\{")
-_PROVINCE_HEADER_RE = re.compile(rb"(?m)^-?(\d+)=\{")
+_COUNTRY_HEADER_RE = re.compile(rb'(?m)^\t"?([A-Z0-9]{3})"?=\{')
+# Text saves commonly put province ids at column zero, while Rakaly's melted
+# EU4bin output indents each direct province child by one tab.
+_PROVINCE_HEADER_RE = re.compile(rb"(?m)^\t?-?(\d+)=\{")
 _TOP_LEVEL_BOUNDARIES = {
     # Stable in EU4 1.37.5 (491d). Unknown layouts use the generic scanner.
     b"countries": (b"\nactive_advisors={",),
@@ -77,7 +86,11 @@ def _block_at(data: bytes, marker_start: int, limit: int | None = None) -> bytes
 
 
 def _top_level_range(data: bytes, key: bytes) -> tuple[int, int]:
-    match = re.search(rb"(?m)^" + re.escape(key) + rb"=\{", data)
+    # Rakaly concatenates ZIP metadata and gamestate directly, so the next
+    # top-level key can immediately follow the previous closing brace.
+    match = re.search(
+        rb"(?m)(?:^|(?<=[\r\n}]))" + re.escape(key) + rb"=\{", data
+    )
     if not match:
         raise SaveParseError(f"存档缺少顶层 {key.decode(errors='replace')} 块。")
     for marker in _TOP_LEVEL_BOUNDARIES.get(key, ()):
@@ -176,14 +189,82 @@ def _read_container(path: Path) -> tuple[str, bytes, bytes, str]:
             names = set(archive.namelist())
             if "gamestate" not in names or "meta" not in names:
                 raise SaveParseError("ZIP 存档缺少 gamestate 或 meta。")
-            return "zip", archive.read("gamestate"), archive.read("meta"), fingerprint
+            gamestate = archive.read("gamestate")
+            meta = archive.read("meta")
+            if gamestate.startswith(b"EU4bin"):
+                melted = _melt_binary_save(path)
+                return "binary_zip", melted, melted, fingerprint
+            return "zip", gamestate, meta, fingerprint
+    if raw.startswith(b"EU4bin"):
+        melted = _melt_binary_save(path)
+        return "binary", melted, melted, fingerprint
     if not raw.startswith(b"EU4txt"):
-        raise SaveParseError("不支持的存档格式；期望 EU4txt 或 EU4 ZIP。")
+        raise SaveParseError("不支持的存档格式；期望 EU4txt、EU4bin 或 EU4 ZIP。")
     return "plaintext", raw, raw, fingerprint
 
 
+def _rakaly_executable() -> Path:
+    candidates = (
+        PROJECT_ROOT / "native" / "rakaly.exe",
+        PROJECT_ROOT / ".tools" / "rakaly-0.8.19" / "rakaly.exe",
+        PROJECT_ROOT / "tools" / "rakaly" / "rakaly.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise SaveParseError(
+        "检测到 EU4bin 铁人存档，但程序缺少内置解码器 rakaly.exe。请重新安装完整发布包。"
+    )
+
+
+def _melt_binary_save(path: Path) -> bytes:
+    executable = _rakaly_executable()
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        completed = subprocess.run(
+            [
+                str(executable),
+                "melt",
+                "--unknown-key",
+                "stringify",
+                "--to-stdout",
+                str(path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=_RAKALY_TIMEOUT_SECONDS,
+            creationflags=creation_flags,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SaveParseError(
+            f"铁人存档解码超过 {_RAKALY_TIMEOUT_SECONDS} 秒，已安全终止；原文件未修改。"
+        ) from exc
+    except OSError as exc:
+        raise SaveParseError(f"无法启动铁人存档解码器：{exc}") from exc
+
+    stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+    if completed.returncode != 0:
+        detail = stderr.splitlines()[-1] if stderr else f"退出代码 {completed.returncode}"
+        raise SaveParseError(f"铁人存档解码失败：{detail}；原文件未修改。")
+    melted = completed.stdout
+    if len(melted) > _MAX_MELTED_SAVE_BYTES:
+        raise SaveParseError("铁人存档解码结果超过 512 MiB 安全上限；原文件未修改。")
+    if not melted.startswith(b"EU4txt"):
+        raise SaveParseError("铁人存档解码器未返回有效 EU4txt 内容；原文件未修改。")
+    if b"\ncountries={" not in melted or b"\nprovinces={" not in melted:
+        raise SaveParseError("铁人存档解码结果缺少国家或省份顶层块；原文件未修改。")
+    if stderr:
+        LOGGER.warning("铁人存档解码器报告：%s", stderr)
+    return melted
+
+
 def _parse_players(gamestate: bytes) -> list[PlayerCountry]:
-    block = _top_level_block(gamestate, b"players_countries")
+    try:
+        block = _top_level_block(gamestate, b"players_countries")
+    except SaveParseError:
+        return []
     values = re.findall(rb'"([^"\r\n]*)"', block)
     players: list[PlayerCountry] = []
     for index in range(0, len(values) - 1, 2):
@@ -507,6 +588,19 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
                 fourth,
             )
         )
+    game_date_match = re.search(rb"(?m)^date=([^\r\n]+)", meta)
+    if not game_date_match:
+        game_date_match = re.search(rb"(?m)^date=([^\r\n]+)", gamestate)
+    local_player_match = re.search(rb'(?m)^player="?([A-Z0-9]{3})"?', meta)
+    if not local_player_match:
+        local_player_match = re.search(rb'(?m)^player="?([A-Z0-9]{3})"?', gamestate)
+    local_player_tag = (
+        local_player_match.group(1).decode("ascii") if local_player_match else None
+    )
+    multiplayer_match = re.search(rb"(?m)^multi_player=(yes|no)", meta)
+    if not multiplayer_match:
+        multiplayer_match = re.search(rb"(?m)^multi_player=(yes|no)", gamestate)
+
     players = _parse_players(gamestate)
     player_names_by_tag: dict[str, list[str]] = {}
     for entry in players:
@@ -522,6 +616,8 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
     )
     countries: dict[str, CountrySnapshot] = {}
     wanted_tags = set(player_by_tag)
+    if local_player_tag:
+        wanted_tags.add(local_player_tag)
     countries_close = gamestate.rfind(b"}", countries_start, countries_end)
     for index, match in enumerate(country_matches):
         tag = match.group(1).decode("ascii")
@@ -540,13 +636,6 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
             version_fields.get("second"),
         )
 
-    game_date_match = re.search(rb"(?m)^date=([^\r\n]+)", meta)
-    if not game_date_match:
-        game_date_match = re.search(rb"(?m)^date=([^\r\n]+)", gamestate)
-    local_player_match = re.search(rb"(?m)^player=\"?([A-Z0-9]{3})\"?", meta)
-    multiplayer_match = re.search(rb"(?m)^multi_player=(yes|no)", meta)
-    if not multiplayer_match:
-        multiplayer_match = re.search(rb"(?m)^multi_player=(yes|no)", gamestate)
     fired_events: set[str] = set()
     try:
         fired_block = _top_level_block(gamestate, b"fired_events")
@@ -567,9 +656,7 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
         format=save_format,
         game_date=_decode(game_date_match.group(1).strip()) if game_date_match else "unknown",
         build_id=None,
-        local_player_tag=(
-            local_player_match.group(1).decode("ascii") if local_player_match else None
-        ),
+        local_player_tag=local_player_tag,
         players=players,
         countries=countries,
         game_version=game_version,

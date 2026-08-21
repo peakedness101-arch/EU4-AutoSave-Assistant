@@ -6,6 +6,7 @@ from eu4_assistant.mapdata import (
     _province_id_raster,
     build_political_map,
     fallback_country_color,
+    invalidate_country_color_cache,
     load_country_colors,
     load_water_provinces,
     province_id_at,
@@ -90,8 +91,13 @@ def test_portable_map_caches_are_reused_and_invalidated(tmp_path: Path) -> None:
 
     load_country_colors.cache_clear()
     _province_id_raster.cache_clear()
-    (tmp_path / "common" / "countries" / "England.txt").unlink()
+    (tmp_path / "common" / "countries" / "England.txt").write_text(
+        "color = { 7 8 9 }\n", encoding="utf-8"
+    )
     assert load_country_colors(tmp_path, cache)["ENG"] == (200, 10, 20)
+    invalidate_country_color_cache(tmp_path, cache)
+    assert load_country_colors(tmp_path, cache)["ENG"] == (7, 8, 9)
+    assert (cache / "country_colors_491d.json").is_file()
 
     image = Image.open(tmp_path / "map" / "provinces.bmp")
     image.putdata([(0, 10, 0), (10, 0, 0), (0, 0, 10)])
@@ -99,3 +105,32 @@ def test_portable_map_caches_are_reused_and_invalidated(tmp_path: Path) -> None:
     _province_id_raster.cache_clear()
     assert province_id_at(tmp_path, 0, 0, cache) == 2
     assert len(list(cache.glob("province_raster_*.npz"))) == 2
+
+
+def test_mod_resources_override_vanilla_with_per_file_fallback(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    mod = tmp_path / "mod"
+    _build_tiny_game(game)
+    (mod / "common" / "country_tags").mkdir(parents=True)
+    (mod / "common" / "countries").mkdir(parents=True)
+    (mod / "map").mkdir(parents=True)
+    (mod / "common" / "country_tags" / "zz_mod.txt").write_text(
+        'ENG = "countries/Mod England.txt"\nMOD = "countries/Modland.txt"\n',
+        encoding="utf-8",
+    )
+    (mod / "common" / "countries" / "Mod England.txt").write_text(
+        "color = { 1 2 3 }\n", encoding="utf-8"
+    )
+    (mod / "common" / "countries" / "Modland.txt").write_text(
+        "color = { 4 5 6 }\n", encoding="utf-8"
+    )
+    (mod / "map" / "default.map").write_text(
+        "sea_starts = { 2 }\nlakes = { }\n", encoding="utf-8"
+    )
+
+    colors = load_country_colors(game, None, mod)
+    assert colors["ENG"] == (1, 2, 3)
+    assert colors["MOD"] == (4, 5, 6)
+    assert colors["FRA"] == (20, 30, 220)
+    assert load_water_provinces(game, mod) == {2}
+    assert province_id_at(game, 0, 0, mod_dir=mod) == 1

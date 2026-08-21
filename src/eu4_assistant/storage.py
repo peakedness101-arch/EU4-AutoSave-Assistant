@@ -246,6 +246,21 @@ class SaveDatabase:
             )
         )
 
+    def delete_paths(self, paths: list[str | Path]) -> set[str]:
+        """Remove database rows for deleted save paths and return fingerprints."""
+        normalized = {str(Path(path).resolve()) for path in paths}
+        if not normalized:
+            return set()
+        fingerprints: set[str] = set()
+        with self.connection:
+            for path in normalized:
+                rows = self.connection.execute(
+                    "SELECT fingerprint FROM saves WHERE path = ?", (path,)
+                ).fetchall()
+                fingerprints.update(str(row["fingerprint"]) for row in rows)
+                self.connection.execute("DELETE FROM saves WHERE path = ?", (path,))
+        return fingerprints
+
     def list_countries(self, save_id: str) -> list[sqlite3.Row]:
         return list(
             self.connection.execute(

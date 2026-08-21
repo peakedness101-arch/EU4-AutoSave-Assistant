@@ -13,6 +13,14 @@ build/
 dist/
 release/
 *.spec
+*.exe
+*.dll
+*.pdb
+*.zip
+
+# Locally downloaded third-party command-line tools
+tools/zig-windows-*/
+tools/rakaly/
 
 # Runtime state and user data
 logs/

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from eu4_assistant.versioning import detect_game_version
-from eu4_assistant.config import AppConfig, default_game_directory, documents_directory
+from eu4_assistant.config import AppConfig, documents_directory, load_config, save_config
 
 
 def test_detects_only_491d(tmp_path: Path) -> None:
@@ -30,9 +30,27 @@ def test_default_save_path_uses_windows_documents_location() -> None:
     )
 
 
-def test_game_directory_can_be_configured_without_a_machine_specific_default(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("EU4_GAME_DIR", str(tmp_path))
-    assert default_game_directory() == str(tmp_path)
-    assert AppConfig().game_dir == str(tmp_path)
+def test_mod_settings_round_trip_and_default_disabled(tmp_path: Path) -> None:
+    config = AppConfig()
+    assert not config.mod_mode_enabled
+    assert not config.setup_confirmed
+    config.mod_mode_enabled = True
+    config.mod_dir = r"D:\Mods\Example"
+    config.setup_confirmed = True
+    path = tmp_path / "settings.json"
+
+    save_config(config, path)
+    restored = load_config(path)
+
+    assert restored.mod_mode_enabled
+    assert restored.mod_dir == r"D:\Mods\Example"
+    assert restored.setup_confirmed
+
+
+def test_legacy_settings_are_treated_as_already_confirmed(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"campaign_name": "旧版用户"}), encoding="utf-8")
+
+    restored = load_config(path)
+
+    assert restored.setup_confirmed

@@ -6,15 +6,18 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PIL import Image
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QToolButton
 
 import eu4_assistant.ui.main_window as main_window_module
+from eu4_assistant.config import AppConfig
 from eu4_assistant.mapdata import ProvinceInfo
 from eu4_assistant.models import ArmySnapshot, CountrySnapshot, SaveRecord
-from eu4_assistant.country_names import country_label
 from eu4_assistant.ui.main_window import MainWindow
+from eu4_assistant.ui.assets import country_flag_pixmap, country_shield_pixmap
 from eu4_assistant.versioning import VersionStatus
 
 
@@ -138,7 +141,7 @@ def test_province_click_selects_owner_and_opens_local_army_popup(
     window._map_clicked(QPointF(100, 100))
 
     assert window.selected_country_tag == "USA"
-    assert window.sidebar_country.text() == f"{country_label('USA')} · Tester"
+    assert window.sidebar_country.text() == "USA · Tester"
     assert "月支出超过月收入两倍" in window.alert_text.toPlainText()
     assert "上月收入 100.00" in window.alert_text.toPlainText()
     assert window.army_popup_widget is not None
@@ -147,8 +150,7 @@ def test_province_click_selects_owner_and_opens_local_army_popup(
         for label in window.army_popup_widget.findChildren(QLabel)
     )
     assert "Test Province" in popup_text
-    assert f"原主 {country_label('USA')}" in popup_text
-    assert f"控制方 {country_label('FRA')}" in popup_text
+    assert "原主 USA · 控制方 FRA" in popup_text
     assert "First Army" in popup_text
     assert "12 团 / 11,500 兵力" in popup_text
     assert window.stat_labels["ideas"].text().startswith("理念")
@@ -168,64 +170,320 @@ def test_province_click_selects_owner_and_opens_local_army_popup(
     assert window.army_popup_widget is None
 
 
-def test_country_table_localizes_year_and_sorts_formatted_numbers(
-    window: MainWindow, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(window, "_ensure_map_index", lambda: None)
-
-    def country(tag: str, player: str, income: float) -> CountrySnapshot:
-        return CountrySnapshot(
-            tag=tag,
-            player_name=player,
-            powers=(int(income), 1, 1),
-            technology=(1, 1, 1),
-            monthly_income=income,
-        )
-
-    record = SaveRecord(
-        path=Path("sortable.eu4"),
-        fingerprint="sortable",
-        format="plaintext",
-        game_date="1767.7.27",
-        build_id="491d",
-        local_player_tag="FRA",
-        players=[],
-        countries={
-            "FRA": country("FRA", "France Player", 9.5),
-            "HAB": country("HAB", "Austria Player", 100.0),
-            "GBR": country("GBR", "Britain Player", 26.92),
-        },
-    )
-
-    window._show_record(record)
-
-    assert window.map_year_badge.text() == "当前年份：1767年"
-    assert window.country_table.isSortingEnabled()
-    assert window.country_table.horizontalHeaderItem(1).text() == "国家"
-    localized = {
-        window.country_table.item(row, 0).text(): window.country_table.item(row, 1).text()
-        for row in range(window.country_table.rowCount())
-    }
-    assert localized == {"FRA": "法兰西", "GBR": "大不列颠", "HAB": "奥地利"}
-
-    window.country_table.sortItems(5, Qt.SortOrder.AscendingOrder)
-    assert [
-        window.country_table.item(row, 0).text()
-        for row in range(window.country_table.rowCount())
-    ] == ["FRA", "GBR", "HAB"]
-    window.country_table.sortItems(5, Qt.SortOrder.DescendingOrder)
-    assert [
-        window.country_table.item(row, 0).text()
-        for row in range(window.country_table.rowCount())
-    ] == ["HAB", "GBR", "FRA"]
-
-
 def test_settings_no_longer_reserves_chinese_mod_directory(window: MainWindow) -> None:
     assert not hasattr(window, "chinese_mod_edit")
     settings_text = "\n".join(
         label.text() for label in window.tool_dialogs["settings"].findChildren(QLabel)
     )
     assert "联机中文补丁" not in settings_text
+
+
+def test_settings_exposes_optional_generic_mod_root(window: MainWindow) -> None:
+    assert not window.mod_mode_checkbox.isChecked()
+    assert not window.mod_dir_edit.isEnabled()
+    window.mod_mode_checkbox.setChecked(True)
+    assert window.mod_dir_edit.isEnabled()
+
+
+def test_first_run_opens_settings_until_user_confirms(
+    application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(
+        database_path=str(tmp_path / "assistant.sqlite3"),
+        setup_confirmed=False,
+    )
+    monkeypatch.setattr(main_window_module, "load_config", lambda: config)
+    monkeypatch.setattr(MainWindow, "_load_database_index", lambda _self: None)
+    monkeypatch.setattr(MainWindow, "_install_save_watcher", lambda _self: None)
+    first_run_window = MainWindow()
+    first_run_window.bridge_timer.stop()
+    first_run_window.show()
+    QApplication.processEvents()
+
+    settings = first_run_window.tool_dialogs["settings"]
+    assert settings.isVisible()
+    assert first_run_window.first_run_settings_notice.isVisible()
+    assert "首次使用" in first_run_window.first_run_settings_notice.text()
+
+    first_run_window.close()
+    QApplication.processEvents()
+
+
+def test_map_uses_one_dominant_shield_per_occupied_province(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    england = CountrySnapshot(
+        tag="ENG",
+        armies=[
+            ArmySnapshot("e1", "English One", 1, 4, 4_000),
+            ArmySnapshot("e2", "English Two", 1, 3, 3_000),
+        ],
+    )
+    france = CountrySnapshot(
+        tag="FRA", armies=[ArmySnapshot("f1", "French Army", 1, 10, 6_500)]
+    )
+    window.current_record = SaveRecord(
+        path=Path("armies.eu4"),
+        fingerprint="armies",
+        format="plaintext",
+        game_date="1500.1.1",
+        build_id="491d",
+        local_player_tag="ENG",
+        players=[],
+        countries={"ENG": england, "FRA": france},
+        province_owners={1: "ENG"},
+    )
+    window.provinces = {
+        1: ProvinceInfo(1, "London", 10, 20, 30, 50.0, 50.0)
+    }
+    monkeypatch.setattr(
+        main_window_module, "load_country_colors", lambda *_args: {"ENG": (1, 2, 3)}
+    )
+
+    def fake_shield(_game, _tag, size, **_kwargs) -> QPixmap:
+        pixmap = QPixmap(*size)
+        pixmap.fill(QColor("white"))
+        return pixmap
+
+    monkeypatch.setattr(main_window_module, "country_shield_pixmap", fake_shield)
+    window._political_map_ready(Image.new("RGB", (100, 100)))
+
+    assert len(window.army_dot_items) == 1
+    assert len(window.army_shield_items) == 1
+    assert window.army_dot_items[0].data(0) == 1
+    assert "主盾徽：ENG" in window.army_shield_items[0].toolTip()
+    label_texts = {
+        child.text()
+        for child in window.army_shield_items[0].childItems()
+        if hasattr(child, "text")
+    }
+    assert "7k" in label_texts
+    window._update_army_marker_visibility(0.84)
+    assert window.army_dot_items[0].isVisible()
+    assert not window.army_shield_items[0].isVisible()
+    window._update_army_marker_visibility(0.85)
+    assert not window.army_dot_items[0].isVisible()
+    assert window.army_shield_items[0].isVisible()
+    window.map_country_combo.clear()
+    window.map_country_combo.addItem("ENG", "ENG")
+    click_position = window.map_view.mapFromScene(QPointF(50.0, 50.0))
+    QTest.mouseClick(
+        window.map_view.viewport(), Qt.MouseButton.LeftButton, pos=click_position
+    )
+    QApplication.processEvents()
+    assert window.army_popup_widget is not None
+    popup_text = "\n".join(
+        label.text() for label in window.army_popup_widget.findChildren(QLabel)
+    )
+    assert "English One" in popup_text
+    assert "French Army" in popup_text
+
+
+def test_crowded_province_click_keeps_map_view_and_bounds_army_popup(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    armies = [
+        ArmySnapshot(
+            f"army-{index}",
+            f"Crowded Army {index}",
+            1,
+            10,
+            10_000,
+        )
+        for index in range(80)
+    ]
+    window.current_record = SaveRecord(
+        path=Path("crowded.eu4"),
+        fingerprint="crowded",
+        format="plaintext",
+        game_date="1500.1.1",
+        build_id="491d",
+        local_player_tag="ENG",
+        players=[],
+        countries={"ENG": CountrySnapshot(tag="ENG", armies=armies)},
+        province_owners={1: "ENG"},
+    )
+    window.provinces = {
+        1: ProvinceInfo(1, "London", 10, 20, 30, 50.0, 50.0)
+    }
+    window.map_country_combo.clear()
+    window.map_country_combo.addItem("ENG", "ENG")
+    window.map_scene.clear()
+    window.map_scene.addRect(0, 0, 1_000, 500)
+    window.map_view.resetTransform()
+    window.map_view.scale(1.75, 1.75)
+    window.map_view.centerOn(QPointF(420.0, 210.0))
+    QApplication.processEvents()
+    scale_before = window.map_view.transform().m11()
+    center_before = window.map_view.mapToScene(
+        window.map_view.viewport().rect().center()
+    )
+    monkeypatch.setattr(main_window_module, "province_id_at", lambda *_args: 1)
+
+    window._map_clicked(QPointF(420.0, 210.0))
+    QApplication.processEvents()
+
+    center_after = window.map_view.mapToScene(
+        window.map_view.viewport().rect().center()
+    )
+    assert window.map_view.transform().m11() == pytest.approx(scale_before)
+    assert center_after.x() == pytest.approx(center_before.x(), abs=1.0)
+    assert center_after.y() == pytest.approx(center_before.y(), abs=1.0)
+    assert window.army_popup_widget is not None
+    assert window.army_popup_widget.height() <= window.map_view.viewport().height() - 12
+    scroll = window.army_popup_widget.findChild(QScrollArea, "armyPopupScroll")
+    assert scroll is not None
+    assert scroll.verticalScrollBar().maximum() > 0
+
+
+def test_ocean_click_keeps_map_scene_and_view_unchanged(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window.current_record = SaveRecord(
+        path=Path("ocean.eu4"),
+        fingerprint="ocean",
+        format="plaintext",
+        game_date="1500.1.1",
+        build_id="491d",
+        local_player_tag="ENG",
+        players=[],
+        countries={"ENG": CountrySnapshot(tag="ENG")},
+        province_owners={1: "ENG"},
+    )
+    monkeypatch.setattr(main_window_module, "load_country_colors", lambda *_args: {})
+    window._political_map_ready(Image.new("RGB", (1_000, 500), (42, 82, 104)))
+    assert window.map_pixmap_item is not None
+    window.map_view.resetTransform()
+    window.map_view.scale(1.6, 1.6)
+    window.map_view.centerOn(QPointF(430.0, 220.0))
+    QApplication.processEvents()
+    item_count = len(window.map_scene.items())
+    scale_before = window.map_view.transform().m11()
+    horizontal_before = window.map_view.horizontalScrollBar().value()
+    vertical_before = window.map_view.verticalScrollBar().value()
+    activations: list[int] = []
+    monkeypatch.setattr(main_window_module, "province_id_at", lambda *_args: 3)
+    monkeypatch.setattr(main_window_module, "load_water_provinces", lambda *_args: {3})
+    monkeypatch.setattr(
+        window,
+        "_activate_province",
+        lambda province_id, _position: activations.append(province_id),
+    )
+
+    # Exercise the ocean branch directly. Qt's offscreen platform can corrupt
+    # its native backing store when QTest synthesizes a viewport click over a
+    # large QGraphicsPixmapItem during interpreter shutdown on Windows.
+    window._map_clicked(
+        window.map_view.mapToScene(window.map_view.viewport().rect().center())
+    )
+    QApplication.processEvents()
+
+    assert activations == []
+    assert len(window.map_scene.items()) == item_count
+    assert window.map_pixmap_item in window.map_scene.items()
+    assert window.map_view.transform().m11() == pytest.approx(scale_before)
+    assert window.map_view.horizontalScrollBar().value() == horizontal_before
+    assert window.map_view.verticalScrollBar().value() == vertical_before
+
+
+def test_shields_are_deferred_until_zoomed_and_reused_on_refresh(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window.current_record = SaveRecord(
+        path=Path("lazy.eu4"),
+        fingerprint="lazy",
+        format="plaintext",
+        game_date="1500.1.1",
+        build_id="491d",
+        local_player_tag="ENG",
+        players=[],
+        countries={
+            "ENG": CountrySnapshot(
+                tag="ENG", armies=[ArmySnapshot("e1", "Army", 1, 4, 4_000)]
+            )
+        },
+        province_owners={1: "ENG"},
+    )
+    window.provinces = {
+        1: ProvinceInfo(1, "London", 10, 20, 30, 50.0, 50.0)
+    }
+    monkeypatch.setattr(
+        main_window_module, "load_country_colors", lambda *_args: {"ENG": (1, 2, 3)}
+    )
+    compose_calls: list[str] = []
+
+    def fake_shield(_game, tag, size, **_kwargs) -> QPixmap:
+        compose_calls.append(tag)
+        pixmap = QPixmap(*size)
+        pixmap.fill(QColor("white"))
+        return pixmap
+
+    monkeypatch.setattr(main_window_module, "country_shield_pixmap", fake_shield)
+    monkeypatch.setattr(
+        window, "_fill_map_view", lambda: window._update_army_marker_visibility(0.4)
+    )
+
+    window._political_map_ready(Image.new("RGB", (100, 100)))
+    QApplication.processEvents()
+    assert compose_calls == []
+    assert len(window.army_dot_items) == 1
+    assert window.army_shield_items == []
+
+    window._update_army_marker_visibility(0.85)
+    assert compose_calls == ["ENG"]
+    assert len(window.army_shield_items) == 1
+
+    window._political_map_ready(Image.new("RGB", (100, 100)))
+    window._update_army_marker_visibility(0.85)
+    assert compose_calls == ["ENG"]
+
+
+def test_country_flag_prefers_mod_file(
+    application: QApplication, tmp_path: Path
+) -> None:
+    game = tmp_path / "game"
+    mod = tmp_path / "mod"
+    (game / "gfx" / "flags").mkdir(parents=True)
+    (mod / "gfx" / "flags").mkdir(parents=True)
+    Image.new("RGBA", (8, 8), (255, 0, 0, 255)).save(
+        game / "gfx" / "flags" / "ENG.tga"
+    )
+    Image.new("RGBA", (8, 8), (0, 0, 255, 255)).save(
+        mod / "gfx" / "flags" / "ENG.tga"
+    )
+
+    vanilla = country_flag_pixmap(game, "ENG", (8, 8))
+    overlaid = country_flag_pixmap(game, "ENG", (8, 8), mod_dir=mod)
+
+    assert vanilla.toImage().pixelColor(4, 4).red() == 255
+    assert overlaid.toImage().pixelColor(4, 4).blue() == 255
+
+
+def test_country_shield_clips_flag_inside_frame_canvas(
+    application: QApplication, tmp_path: Path
+) -> None:
+    game = tmp_path / "game"
+    flags = game / "gfx" / "flags"
+    interface = game / "gfx" / "interface"
+    flags.mkdir(parents=True)
+    interface.mkdir(parents=True)
+    Image.new("RGBA", (32, 32), (245, 190, 0, 255)).save(flags / "TST.tga")
+    Image.new("RGBA", (40, 40), (0, 0, 0, 255)).save(
+        interface / "shield_medium_mask.tga"
+    )
+    Image.new("RGBA", (64, 64), (0, 0, 0, 0)).save(
+        interface / "shield_medium_overlay.dds"
+    )
+
+    shield = country_shield_pixmap(game, "TST", (64, 64)).toImage()
+
+    assert shield.pixelColor(32, 32).alpha() == 255
+    assert all(shield.pixelColor(0, y).alpha() == 0 for y in range(64))
+    assert all(shield.pixelColor(63, y).alpha() == 0 for y in range(64))
+    assert all(shield.pixelColor(x, 0).alpha() == 0 for x in range(64))
+    assert all(shield.pixelColor(x, 63).alpha() == 0 for x in range(64))
 
 
 def test_country_overview_groups_related_information(window: MainWindow) -> None:

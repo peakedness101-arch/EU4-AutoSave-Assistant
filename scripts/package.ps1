@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$ReleaseVersion = '1.1'
+    [string]$ReleaseVersion = '1.2'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +17,7 @@ $FinalBundle = Join-Path $DistributionRoot $BundleName
 $ZipPath = Join-Path $DistributionRoot ($BundleName + '.zip')
 $AppName = 'EU4_AutoSave_Assistant'
 $MaximumReleaseBytes = 110MB
+$RakalyLicense = Join-Path $Workspace 'licenses\Rakaly.txt'
 
 function Assert-ChildPath([string]$Path, [string]$Parent) {
     $resolvedPath = [IO.Path]::GetFullPath($Path).TrimEnd([char]92)
@@ -40,7 +41,8 @@ foreach ($required in @(
     (Join-Path $Workspace 'native\bridge.cpp'),
     (Join-Path $Workspace 'native\injector.cpp'),
     (Join-Path $Workspace 'native\launcher.cpp'),
-    (Join-Path $Workspace 'data\country_names.html')
+    (Join-Path $Workspace 'data\country_names.html'),
+    $RakalyLicense
 )) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Required release input is missing: $required"
@@ -58,6 +60,10 @@ New-Item -ItemType Directory -Path $StagedBundle | Out-Null
 
 & (Join-Path $PSScriptRoot 'build_native.ps1') -OutputDirectory $NativeBuildRoot
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$Rakaly = (& (Join-Path $PSScriptRoot 'get_rakaly.ps1') | Select-Object -Last 1)
+if (-not (Test-Path -LiteralPath $Rakaly)) {
+    throw "Verified Rakaly executable is missing: $Rakaly"
+}
 
 & $Python -m PyInstaller --noconfirm --clean --windowed `
     --name $AppName `
@@ -123,6 +129,13 @@ $DataOutput = Join-Path $StagedApp 'data'
 New-Item -ItemType Directory -Path $NativeOutput, $DataOutput -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $NativeBuildRoot 'EU4AutoSaveBridge.dll') -Destination $NativeOutput
 Copy-Item -LiteralPath (Join-Path $NativeBuildRoot 'EU4BridgeInjector.exe') -Destination $NativeOutput
+Copy-Item -LiteralPath $Rakaly -Destination (Join-Path $NativeOutput 'rakaly.exe')
+Copy-Item -LiteralPath $RakalyLicense -Destination (Join-Path $NativeOutput 'rakaly-LICENSE.txt')
+@(
+    'Rakaly CLI v0.8.19'
+    'Source: https://github.com/rakaly/cli/releases/tag/v0.8.19'
+    'Windows x64 executable SHA-256: E154AF990AAED2C2F44284946772188C9749AD3F6B641B41F6C23456A6F1633D'
+) | Set-Content -LiteralPath (Join-Path $NativeOutput 'rakaly-VERSION.txt') -Encoding UTF8
 if (Test-Path -LiteralPath (Join-Path $Workspace 'data\province_index.json')) {
     Copy-Item -LiteralPath (Join-Path $Workspace 'data\province_index.json') -Destination $DataOutput
 }
@@ -172,6 +185,7 @@ $Manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $StagedApp 'rel
 $Hashes = @(
     ('{0}  EU4_AutoSave_Assistant.exe' -f (Get-FileHash -LiteralPath (Join-Path $StagedBundle 'EU4_AutoSave_Assistant.exe') -Algorithm SHA256).Hash)
     ('{0}  release\EU4_AutoSave_Assistant\EU4_AutoSave_Assistant.exe' -f (Get-FileHash -LiteralPath (Join-Path $StagedApp 'EU4_AutoSave_Assistant.exe') -Algorithm SHA256).Hash)
+    ('{0}  release\EU4_AutoSave_Assistant\native\rakaly.exe' -f (Get-FileHash -LiteralPath (Join-Path $NativeOutput 'rakaly.exe') -Algorithm SHA256).Hash)
     ('{0}  release\EU4_AutoSave_Assistant\data\country_names.html' -f (Get-FileHash -LiteralPath (Join-Path $DataOutput 'country_names.html') -Algorithm SHA256).Hash)
 )
 $Hashes | Set-Content -LiteralPath (Join-Path $StagedBundle 'SHA256SUMS.txt') -Encoding UTF8

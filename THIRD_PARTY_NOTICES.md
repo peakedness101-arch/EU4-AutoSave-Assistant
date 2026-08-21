@@ -12,6 +12,12 @@
 
 该数据的再利用必须遵守署名、非商业和相同方式共享条款。程序源码的许可状态不会覆盖该第三方内容。
 
+## Rakaly CLI
+
+发行构建使用 [Rakaly CLI v0.8.19](https://github.com/rakaly/cli/releases/tag/v0.8.19) 在用户本机解码 Paradox `EU4bin` 存档。仓库不提交 Rakaly 可执行文件；`scripts/get_rakaly.ps1` 从官方 GitHub Release 下载 Windows x64 发行包，并校验固定 SHA-256。
+
+Rakaly CLI 采用 MIT License。许可证全文保存在 `licenses/Rakaly.txt`，打包时会随 `rakaly.exe` 一起复制到发行目录。
+
 ## Europa Universalis IV
 
 Europa Universalis IV、相关商标以及游戏内图像和数据归 Paradox Interactive 所有。本仓库不包含原版游戏图像；运行时仅从用户本地安装目录读取界面图标和旗帜。

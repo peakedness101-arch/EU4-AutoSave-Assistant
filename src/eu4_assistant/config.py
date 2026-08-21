@@ -38,6 +38,7 @@ def documents_directory() -> Path:
 
 
 def default_game_directory() -> str:
+    """Find a local EU4 install without embedding a developer machine path."""
     configured = os.environ.get("EU4_GAME_DIR")
     if configured:
         return str(Path(configured).expanduser())
@@ -61,10 +62,7 @@ def default_game_directory() -> str:
 
     for steam_root in steam_roots:
         candidate = (
-            steam_root
-            / "steamapps"
-            / "common"
-            / "Europa Universalis IV"
+            steam_root / "steamapps" / "common" / "Europa Universalis IV"
         )
         if (candidate / "eu4.exe").is_file():
             return str(candidate)
@@ -85,6 +83,13 @@ class AppConfig:
     campaign_name: str = "默认战役"
     autosave_mode: str = "quarterly"
     allow_unsupported_version: bool = False
+    archive_cleanup_enabled: bool = True
+    mod_mode_enabled: bool = False
+    mod_dir: str = ""
+    mini_window_hotkey: str = "Ctrl+Shift+F9"
+    mini_window_lock_hotkey: str = "Ctrl+Shift+F10"
+    mini_window_pos: str = ""
+    setup_confirmed: bool = False
 
 
 def load_config(path: Path | None = None) -> AppConfig:
@@ -92,6 +97,14 @@ def load_config(path: Path | None = None) -> AppConfig:
     if not config_path.exists():
         return AppConfig()
     raw = json.loads(config_path.read_text(encoding="utf-8"))
+    # Ctrl+Alt+L is commonly reserved by other desktop software. Migrate only
+    # the former built-in default; all other custom sequences remain intact.
+    if raw.get("mini_window_lock_hotkey") == "Ctrl+Alt+L":
+        raw["mini_window_lock_hotkey"] = "Ctrl+Shift+F10"
+    # A settings file created by an older release represents an existing user,
+    # so the new first-run dialog must not appear after every upgrade.
+    if "setup_confirmed" not in raw:
+        raw["setup_confirmed"] = True
     allowed = AppConfig.__dataclass_fields__
     return AppConfig(**{key: value for key, value in raw.items() if key in allowed})
 

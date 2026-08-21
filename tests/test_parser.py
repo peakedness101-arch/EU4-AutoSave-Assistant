@@ -7,6 +7,7 @@ from eu4_assistant.parser import (
     _matching_brace,
     parse_save,
 )
+import eu4_assistant.parser as parser_module
 
 
 MINIMAL_SAVE = b'''EU4txt
@@ -209,3 +210,45 @@ def test_all_country_mode_includes_non_player_countries(tmp_path: Path) -> None:
 def test_player_names_preserve_malformed_bytes_without_control_characters() -> None:
     assert _decode_player_name(b"\x11M\x96") == "ID:114d96"
     assert _decode_player_name("紫什么".encode() + b"\xe5lintian") == "紫什么\\xe5lintian"
+
+
+def test_binary_zip_uses_melter_and_accepts_quoted_country_tags(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "ironman.eu4"
+    with ZipFile(path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("gamestate", b"EU4bin\x00test")
+        archive.writestr("meta", b"EU4bin\x00meta")
+    melted = MINIMAL_SAVE.replace(b"\tENG={", b'\t"ENG"={').replace(
+        b"\tFRA={", b'\t"FRA"={'
+    )
+    monkeypatch.setattr(parser_module, "_melt_binary_save", lambda _path: melted)
+
+    record = parse_save(path, include_all_countries=True)
+    assert record.format == "binary_zip"
+    assert record.local_player_tag == "ENG"
+    assert set(record.countries) == {"ENG", "FRA"}
+
+
+def test_single_player_without_players_block_falls_back_to_local_tag(tmp_path: Path) -> None:
+    path = tmp_path / "single.eu4"
+    body = MINIMAL_SAVE.replace(
+        b'multi_player=yes\nplayers_countries={\n    "Alice"\n    "ENG"\n}\n',
+        b"multi_player=no\n",
+    )
+    path.write_bytes(body)
+    record = parse_save(path)
+    assert record.multiplayer is False
+    assert record.players == []
+    assert set(record.countries) == {"ENG"}
+
+
+def test_melted_binary_indented_province_keys_are_parsed(tmp_path: Path) -> None:
+    path = tmp_path / "melted.eu4"
+    body = MINIMAL_SAVE.replace(b"\n-236={", b"\n\t-236={").replace(
+        b"\n-183={", b"\n\t-183={"
+    )
+    path.write_bytes(body)
+    record = parse_save(path)
+    assert record.province_owners == {236: "ENG", 183: "FRA"}
+    assert record.province_controllers == {236: "FRA"}

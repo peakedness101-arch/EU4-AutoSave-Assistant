@@ -36,6 +36,28 @@ class ArchiveBatchItem:
     error: str | None = None
 
 
+@dataclass(slots=True)
+class CleanupItem:
+    path: str
+    reason: str
+    size_bytes: int
+    removed_at: str
+
+
+@dataclass(slots=True)
+class CleanupResult:
+    removed: list[CleanupItem]
+    errors: list[str]
+
+    @property
+    def released_bytes(self) -> int:
+        return sum(item.size_bytes for item in self.removed)
+
+
+ARCHIVE_RETENTION_DAYS = 90
+ARCHIVE_MAX_FILES = 500
+
+
 def _safe_name(value: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     return cleaned or "未命名战役"
@@ -72,16 +94,14 @@ def preview_archive_path(
     campaign_name: str,
     game_date: str,
     local_tag: str | None,
-    captured_at: datetime | None = None,
 ) -> Path:
-    timestamp = (captured_at or datetime.now()).strftime("%Y%m%d-%H%M%S")
     date_part = game_date.replace(".", "-")
     tag = local_tag or "---"
     folder = Path(archive_root) / _safe_name(campaign_name)
-    stem = f"{timestamp}__{date_part}__{tag}"
+    stem = f"{tag}_{date_part}"
     sequence = 1
     while True:
-        candidate = folder / f"{stem}__{sequence:04d}.eu4"
+        candidate = folder / f"{stem}_{sequence:04d}.eu4"
         if not candidate.exists() and not candidate.with_suffix(candidate.suffix + ".partial").exists():
             return candidate
         sequence += 1
@@ -172,6 +192,14 @@ def undo_last_archive(archive_root: str | Path) -> UndoResult:
     lines = [line for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not lines:
         raise ValueError("归档清单为空。")
+    while lines:
+        candidate_entry = json.loads(lines[-1])
+        if Path(candidate_entry["destination"]).is_file():
+            break
+        lines.pop()
+    if not lines:
+        manifest.write_text("", encoding="utf-8")
+        raise FileNotFoundError("没有仍然存在、可撤销的归档文件。")
     entry = json.loads(lines[-1])
     source = Path(entry["source"])
     destination = Path(entry["destination"])
@@ -199,3 +227,71 @@ def undo_last_archive(archive_root: str | Path) -> UndoResult:
         stream.write(json.dumps(asdict(undo), ensure_ascii=False) + "\n")
     manifest.write_text("\n".join(lines[:-1]) + ("\n" if len(lines) > 1 else ""), encoding="utf-8")
     return undo
+
+
+def cleanup_archives(
+    archive_root: str | Path,
+    *,
+    max_age_days: int = ARCHIVE_RETENTION_DAYS,
+    max_files: int = ARCHIVE_MAX_FILES,
+    now: datetime | None = None,
+) -> CleanupResult:
+    """Permanently remove aged/excess saves strictly inside ``archive_root``."""
+    if max_age_days < 0 or max_files < 0:
+        raise ValueError("归档保留天数和份数不能为负数。")
+    root = Path(archive_root).resolve()
+    if not root.is_dir():
+        return CleanupResult([], [])
+
+    candidates: list[tuple[int, str, Path, int]] = []
+    errors: list[str] = []
+    for path in root.rglob("*.eu4"):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+            stat = resolved.stat()
+        except (OSError, ValueError) as exc:
+            errors.append(f"跳过 {path}：{exc}")
+            continue
+        candidates.append((stat.st_mtime_ns, str(resolved).casefold(), resolved, stat.st_size))
+
+    cutoff_ns = int((now or datetime.now()).timestamp() * 1_000_000_000) - (
+        max_age_days * 24 * 60 * 60 * 1_000_000_000
+    )
+    selected: dict[Path, tuple[str, int]] = {}
+    survivors: list[tuple[int, str, Path, int]] = []
+    for mtime_ns, folded, path, size in candidates:
+        if mtime_ns < cutoff_ns:
+            selected[path] = (f"超过 {max_age_days} 天", size)
+        else:
+            survivors.append((mtime_ns, folded, path, size))
+    survivors.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    for _mtime_ns, _folded, path, size in survivors[max_files:]:
+        selected[path] = (f"超过最新 {max_files} 份上限", size)
+
+    removed: list[CleanupItem] = []
+    for path, (reason, size) in sorted(
+        selected.items(), key=lambda item: str(item[0]).casefold()
+    ):
+        try:
+            path.unlink()
+        except OSError as exc:
+            errors.append(f"删除失败 {path}：{exc}")
+            continue
+        removed.append(
+            CleanupItem(
+                path=str(path),
+                reason=reason,
+                size_bytes=size,
+                removed_at=datetime.now().isoformat(timespec="seconds"),
+            )
+        )
+
+    if removed:
+        cleanup_manifest = root / "archive_cleanup_manifest.jsonl"
+        with cleanup_manifest.open("a", encoding="utf-8") as stream:
+            for item in removed:
+                stream.write(json.dumps(asdict(item), ensure_ascii=False) + "\n")
+    return CleanupResult(removed, errors)

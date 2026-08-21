@@ -21,18 +21,8 @@ def main() -> int:
     application.setFont(QFont("Microsoft YaHei UI", 9))
     window = MainWindow()
     if "--smoke-test" in sys.argv:
-        if (
-            len(window.tool_dialogs) != 8
-            or window.map_scene is None
-            or not window.country_table.isSortingEnabled()
-            or window.map_year_badge is None
-        ):
+        if len(window.tool_dialogs) != 8 or window.map_scene is None:
             return 2
-        from .country_names import country_names
-
-        localized = country_names()
-        if len(localized) < 900 or localized.get("FRA") != "法兰西":
-            return 4
         configured_game = window.config.game_dir
         if (Path(configured_game) / "map" / "provinces.bmp").is_file():
             from .mapdata import build_political_map

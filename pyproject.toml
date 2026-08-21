@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eu4-mp-assistant"
-version = "1.1.0"
+version = "1.2.0"
 description = "EU4 491d multiplayer client autosave, archive, and save-analysis assistant"
 requires-python = ">=3.11"
 dependencies = [

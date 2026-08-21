@@ -26,7 +26,16 @@ from PySide6.QtCore import (
     QThreadPool,
     QTimer,
 )
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -37,12 +46,18 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QFormLayout,
+    QGraphicsItemGroup,
+    QGraphicsPixmapItem,
+    QGraphicsRectItem,
     QGraphicsScene,
+    QGraphicsItem,
+    QGraphicsSimpleTextItem,
     QGraphicsView,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QKeySequenceEdit,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -62,7 +77,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..alerts import economic_alerts
-from ..archive import archive_many, archive_save, preview_archive_path, undo_last_archive
+from ..army_markers import aggregate_armies_by_province, compact_army_strength
+from ..archive import (
+    archive_many,
+    archive_save,
+    cleanup_archives,
+    preview_archive_path,
+    undo_last_archive,
+)
 from ..bridge import BridgeClient
 from ..calculator import (
     LoanCalculationError,
@@ -77,14 +99,19 @@ from ..compare import (
     validate_same_game_version,
 )
 from ..config import AppConfig, PROJECT_ROOT, load_config, save_config
-from ..country_names import country_label, country_name
+from ..hotkeys import GlobalHotkeyManager
 from ..mapdata import (
     ProvinceInfo,
     build_political_map,
+    clear_runtime_map_caches,
+    fallback_country_color,
+    load_country_colors,
     load_or_build_province_index,
+    load_water_provinces,
     province_id_at,
 )
 from ..models import CountrySnapshot, SaveRecord
+from ..resources import GameResourceResolver
 from ..parser import parse_save
 from ..scheduling import AutosaveScheduler, ScheduledSaveRequest
 from ..savefiles import latest_save, managed_autosaves
@@ -93,33 +120,23 @@ from ..versioning import detect_game_version
 from ..workers import FunctionWorker
 from .assets import (
     country_flag_pixmap,
+    country_shield_pixmap,
     game_interface_pixmap,
     game_logo_pixmap,
     pil_to_qimage,
 )
+from .mini_window import MiniCountryWindow
 
 
 LOGGER = logging.getLogger("eu4_assistant.ui")
-
-
-class SortableTableWidgetItem(QTableWidgetItem):
-    """Table item that keeps formatted text while sorting by its raw number."""
-
-    def __init__(self, text: str, sort_value: float | int | None = None) -> None:
-        super().__init__(text)
-        if sort_value is not None:
-            self.setData(Qt.ItemDataRole.UserRole, sort_value)
-
-    def __lt__(self, other: QTableWidgetItem) -> bool:
-        left = self.data(Qt.ItemDataRole.UserRole)
-        right = other.data(Qt.ItemDataRole.UserRole)
-        if left is not None and right is not None:
-            return float(left) < float(right)
-        return self.text().casefold() < other.text().casefold()
+ARMY_SHIELD_ZOOM_THRESHOLD = 0.85
+ARMY_SHIELD_SIZE = 26
 
 
 class MapView(QGraphicsView):
     mapClicked = Signal(QPointF)
+    provinceMarkerClicked = Signal(int, QPointF)
+    zoomChanged = Signal(float)
 
     def __init__(self, scene: QGraphicsScene):
         super().__init__(scene)
@@ -128,10 +145,15 @@ class MapView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setBackgroundBrush(QColor("#1f3441"))
         self._press_position: QPoint | None = None
+        self._press_scroll_values: tuple[int, int] | None = None
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt naming convention
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_position = event.position().toPoint()
+            self._press_scroll_values = (
+                self.horizontalScrollBar().value(),
+                self.verticalScrollBar().value(),
+            )
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt naming convention
@@ -142,9 +164,35 @@ class MapView(QGraphicsView):
             and press_position is not None
             and (event.position().toPoint() - press_position).manhattanLength() <= 5
         ):
-            scene_position = self.mapToScene(event.position().toPoint())
-            QTimer.singleShot(0, lambda position=scene_position: self.mapClicked.emit(position))
+            viewport_position = event.position().toPoint()
+            if self._press_scroll_values is not None:
+                horizontal, vertical = self._press_scroll_values
+                self.horizontalScrollBar().setValue(horizontal)
+                self.verticalScrollBar().setValue(vertical)
+            scene_position = self.mapToScene(viewport_position)
+            item = self.itemAt(viewport_position)
+            province_id = None
+            while item is not None:
+                province_id = item.data(0)
+                if isinstance(province_id, int) and province_id > 0:
+                    break
+                item = item.parentItem()
+            if isinstance(province_id, int) and province_id > 0:
+                QTimer.singleShot(
+                    0,
+                    lambda pid=province_id, position=scene_position:
+                    self.provinceMarkerClicked.emit(pid, position),
+                )
+            else:
+                QTimer.singleShot(
+                    0, lambda position=scene_position: self.mapClicked.emit(position)
+                )
+            # ScrollHandDrag can dirty only part of the viewport even for a
+            # stationary click on the base pixmap. Repaint the full map so its
+            # one-pixel political borders cannot disappear through aliasing.
+            self.viewport().update()
         self._press_position = None
+        self._press_scroll_values = None
 
     def wheelEvent(self, event):  # noqa: N802 - Qt naming convention
         current = self.transform().m11()
@@ -152,7 +200,11 @@ class MapView(QGraphicsView):
         target = current * factor
         if 0.05 <= target <= 24.0:
             self.scale(factor, factor)
+            self.zoomChanged.emit(self.transform().m11())
         event.accept()
+
+    def announce_zoom(self) -> None:
+        self.zoomChanged.emit(self.transform().m11())
 
 
 class MainWindow(QMainWindow):
@@ -178,15 +230,28 @@ class MainWindow(QMainWindow):
         self.bridge_poll_busy = False
         self.compare_records: list[SaveRecord] = []
         self.auto_archive_busy = False
+        self.archive_cleanup_busy = False
         self.auto_archive_seen: dict[str, int] = {}
         self.filling_calculator = False
         self.map_index_busy = False
+        self.map_index_generation = 0
         self.map_render_generation = 0
         self.sidebar_collapsed = False
         self.selected_country_tag: str | None = None
         self.army_popup_widget: QFrame | None = None
+        self.map_pixmap_item: QGraphicsPixmapItem | None = None
+        self.army_dot_items: list[QGraphicsItem] = []
+        self.army_shield_items: list[QGraphicsItem] = []
+        self.army_marker_specs: list[
+            tuple[int, float, float, str, float, str]
+        ] = []
+        self.army_shields_built = False
+        self.country_shield_cache: dict[str, QPixmap] = {}
         self.tool_dialogs: dict[str, QDialog] = {}
         self.analysis_dialogs: list[QDialog] = []
+        self.mini_window: MiniCountryWindow | None = None
+        self._mini_window_hotkey_id: int | None = None
+        self._mini_lock_hotkey_id: int | None = None
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -211,9 +276,15 @@ class MainWindow(QMainWindow):
         self._load_database_index()
         self._install_save_watcher()
 
+        self._hotkey_manager = GlobalHotkeyManager(self)
+        self._hotkey_manager.triggered.connect(self._global_hotkey_triggered)
+        self._register_global_hotkeys()
+
         self.bridge_timer = QTimer(self)
         self.bridge_timer.timeout.connect(self._poll_bridge)
         self.bridge_timer.start(5000)
+        QTimer.singleShot(0, self._schedule_archive_cleanup)
+        QTimer.singleShot(0, self._show_first_run_settings)
 
     def _build_control_dialog(self) -> None:
         self.left_rail = QFrame()
@@ -298,6 +369,9 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda _checked=False, name=key: self._show_tool_dialog(name))
             layout.addWidget(button)
             self.left_tool_buttons[key] = button
+        mini_window_button = QPushButton("小窗口模式")
+        mini_window_button.clicked.connect(self._mini_toggle_window)
+        layout.addWidget(mini_window_button)
         refresh_map = QPushButton("刷新政治地图")
         refresh_map.clicked.connect(self._ensure_map_index)
         fit_map = QPushButton("显示完整世界")
@@ -334,6 +408,10 @@ class MainWindow(QMainWindow):
             self.bridge_timer.stop()
         if hasattr(self, "save_watcher"):
             self.save_watcher.blockSignals(True)
+        if self.mini_window is not None:
+            if self.mini_window.isVisible():
+                self._save_mini_window_position()
+            self.mini_window.close()
         self.thread_pool.waitForDone(10000)
         self.bridge.close()
         self.database.close()
@@ -345,11 +423,10 @@ class MainWindow(QMainWindow):
         heading = QLabel("玩家国家数据")
         heading.setObjectName("sectionTitle")
         layout.addWidget(heading)
-        self.country_table = QTableWidget(0, 13)
+        self.country_table = QTableWidget(0, 12)
         self.country_table.setHorizontalHeaderLabels(
             [
                 "TAG",
-                "国家",
                 "玩家",
                 "ADM/DIP/MIL",
                 "科技",
@@ -365,8 +442,6 @@ class MainWindow(QMainWindow):
         )
         self.country_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.country_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.country_table.setSortingEnabled(True)
-        self.country_table.horizontalHeader().setSortIndicatorShown(True)
         self.country_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.country_table.horizontalHeader().setStretchLastSection(True)
         self.country_table.itemSelectionChanged.connect(self._country_selection_changed)
@@ -502,6 +577,8 @@ class MainWindow(QMainWindow):
         self.map_view = MapView(self.map_scene)
         self.map_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.map_view.mapClicked.connect(self._map_clicked)
+        self.map_view.provinceMarkerClicked.connect(self._map_marker_clicked)
+        self.map_view.zoomChanged.connect(self._update_army_marker_visibility)
         map_container = QWidget()
         map_overlay = QGridLayout(map_container)
         map_overlay.setContentsMargins(0, 0, 0, 0)
@@ -516,22 +593,6 @@ class MainWindow(QMainWindow):
             0,
             0,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-        )
-        self.map_year_badge = QLabel("当前年份：—", map_container)
-        self.map_year_badge.setObjectName("mapYearBadge")
-        self.map_year_badge.setAttribute(
-            Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
-        )
-        self.map_year_badge.setStyleSheet(
-            "QLabel#mapYearBadge{background:rgba(13,27,42,205);color:#ffffff;"
-            "border:1px solid rgba(255,255,255,120);border-radius:6px;"
-            "font-size:16px;font-weight:700;padding:7px 11px;}"
-        )
-        map_overlay.addWidget(
-            self.map_year_badge,
-            0,
-            0,
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
         )
         map_overlay.setContentsMargins(10, 10, 0, 0)
         map_splitter.addWidget(map_container)
@@ -580,6 +641,8 @@ class MainWindow(QMainWindow):
         overview_grid = QGridLayout(self.country_overview)
         self.stat_labels: dict[str, QLabel] = {}
         self.stat_positions: dict[str, tuple[int, int, int]] = {}
+        self.stat_icon_labels: dict[str, QLabel] = {}
+        self.stat_icon_specs: dict[str, list[str]] = {}
         overview_specs = [
             ("treasury", "国库", ["icon_gold.dds"], 0, 0, 1),
             ("expense", "支出", ["root_out_corruption.dds", "icon_gold.dds"], 0, 1, 1),
@@ -598,7 +661,9 @@ class MainWindow(QMainWindow):
         for key, title, icons, row, column, span in overview_specs:
             icon = QLabel()
             icon.setFixedSize(28, 28)
-            pixmap = game_interface_pixmap(self.config.game_dir, icons, (26, 26))
+            pixmap = game_interface_pixmap(
+                self.config.game_dir, icons, (26, 26), mod_dir=self._active_mod_dir()
+            )
             if not pixmap.isNull():
                 icon.setPixmap(pixmap)
             value = QLabel(f"{title}\n—")
@@ -609,6 +674,8 @@ class MainWindow(QMainWindow):
             overview_grid.addLayout(cell, row, column, 1, span)
             self.stat_labels[key] = value
             self.stat_positions[key] = (row, column, span)
+            self.stat_icon_labels[key] = icon
+            self.stat_icon_specs[key] = icons
         warning_layout.addWidget(self.country_overview)
 
         self.identity_label = QLabel("宗教：—\n主流文化：—")
@@ -656,6 +723,11 @@ class MainWindow(QMainWindow):
         self.remove_source.setChecked(True)
         self.auto_archive_checkbox = QCheckBox("自动归档并解析桥接生成的存档")
         self.auto_archive_checkbox.setChecked(True)
+        self.archive_cleanup_checkbox = QCheckBox(
+            "自动清理归档（90 天或全局超过 500 份）"
+        )
+        self.archive_cleanup_checkbox.setChecked(self.config.archive_cleanup_enabled)
+        self.archive_cleanup_checkbox.toggled.connect(self._archive_cleanup_toggled)
         preview = QPushButton("预览命名")
         preview.clicked.connect(self._preview_archive)
         execute = QPushButton("执行安全归档")
@@ -669,9 +741,10 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.archive_destination, 1, 1, 1, 2)
         controls.addWidget(self.remove_source, 2, 0, 1, 2)
         controls.addWidget(self.auto_archive_checkbox, 2, 2)
-        controls.addWidget(preview, 3, 0)
-        controls.addWidget(undo, 3, 1)
-        controls.addWidget(execute, 3, 2)
+        controls.addWidget(self.archive_cleanup_checkbox, 3, 0, 1, 3)
+        controls.addWidget(preview, 4, 0)
+        controls.addWidget(undo, 4, 1)
+        controls.addWidget(execute, 4, 2)
         layout.addLayout(controls)
         self.archive_log = QTextEdit()
         self.archive_log.setReadOnly(True)
@@ -822,11 +895,33 @@ class MainWindow(QMainWindow):
     def _build_settings_tab(self) -> None:
         tab = QWidget()
         form = QFormLayout(tab)
+        self.first_run_settings_notice = QLabel(
+            "首次使用请确认 EU4 安装目录、存档目录与默认归档目录。"
+            "确认无误后点击下方“保存设置并重新检测版本”；未保存时，下次启动仍会提示。"
+        )
+        self.first_run_settings_notice.setObjectName("firstRunNotice")
+        self.first_run_settings_notice.setWordWrap(True)
+        self.first_run_settings_notice.hide()
         self.game_dir_edit = QLineEdit(self.config.game_dir)
+        self.mod_mode_checkbox = QCheckBox("启用 Mod 资源优先模式")
+        self.mod_mode_checkbox.setChecked(self.config.mod_mode_enabled)
+        self.mod_dir_edit = QLineEdit(self.config.mod_dir)
         self.save_dir_edit = QLineEdit(self.config.save_dir)
         self.settings_archive_edit = QLineEdit(self.config.archive_dir)
         game_button = QPushButton("选择 EU4 安装目录")
         game_button.clicked.connect(lambda: self._choose_directory(self.game_dir_edit))
+        mod_button = QPushButton("选择 Mod 内容目录")
+        mod_button.clicked.connect(lambda: self._choose_directory(self.mod_dir_edit))
+        self.mod_mode_checkbox.toggled.connect(self.mod_dir_edit.setEnabled)
+        self.mod_mode_checkbox.toggled.connect(mod_button.setEnabled)
+        self.mod_dir_edit.setEnabled(self.config.mod_mode_enabled)
+        mod_button.setEnabled(self.config.mod_mode_enabled)
+        mod_hint = QLabel(
+            "选择直接包含 map、common 或 gfx 的 Mod 根目录。读取地图、国家颜色、"
+            "旗帜和界面资源时优先使用 Mod，缺失文件自动回退原版。"
+        )
+        mod_hint.setWordWrap(True)
+        mod_hint.setObjectName("subtleText")
         save_button = QPushButton("选择存档目录")
         save_button.clicked.connect(lambda: self._choose_directory(self.save_dir_edit))
         archive_button = QPushButton("选择默认归档目录")
@@ -853,18 +948,41 @@ class MainWindow(QMainWindow):
         self.log_directory.setReadOnly(True)
         open_logs = QPushButton("打开报错日志目录")
         open_logs.clicked.connect(self._open_log_directory)
+        self.mini_window_hotkey_edit = QKeySequenceEdit(
+            QKeySequence(self.config.mini_window_hotkey)
+        )
+        self.mini_lock_hotkey_edit = QKeySequenceEdit(
+            QKeySequence(self.config.mini_window_lock_hotkey)
+        )
+        hotkey_hint = QLabel(
+            "小窗口开关与锁定使用系统级全局快捷键，游戏窗口获得焦点时也能触发。"
+        )
+        hotkey_hint.setWordWrap(True)
+        hotkey_hint.setObjectName("subtleText")
+        self.hotkey_status_label = QLabel("快捷键状态将在程序启动后显示。")
+        self.hotkey_status_label.setWordWrap(True)
+        self.hotkey_status_label.setObjectName("subtleText")
+        form.addRow(self.first_run_settings_notice)
         form.addRow("EU4 安装目录", self.game_dir_edit)
         form.addRow("", game_button)
+        form.addRow("Mod 模式", self.mod_mode_checkbox)
+        form.addRow("Mod 内容目录", self.mod_dir_edit)
+        form.addRow("", mod_button)
+        form.addRow("", mod_hint)
         form.addRow("EU4 存档目录", self.save_dir_edit)
         form.addRow("", save_button)
         form.addRow("默认归档目录", self.settings_archive_edit)
         form.addRow("", archive_button)
         form.addRow("非 491d 使用", self.allow_unsupported_checkbox)
         form.addRow("", compatibility_risk)
+        form.addRow("小窗口开关快捷键", self.mini_window_hotkey_edit)
+        form.addRow("小窗口锁定快捷键", self.mini_lock_hotkey_edit)
+        form.addRow("", hotkey_hint)
+        form.addRow("注册状态", self.hotkey_status_label)
         form.addRow("运行与崩溃日志", self.log_directory)
         form.addRow("", open_logs)
         form.addRow("", save_settings)
-        self._register_tool_dialog("settings", "设置与诊断", tab, (820, 580))
+        self._register_tool_dialog("settings", "设置与诊断", tab, (860, 690))
 
     def _apply_theme(self) -> None:
         self.setStyleSheet(
@@ -916,6 +1034,10 @@ class MainWindow(QMainWindow):
                 background: #fff4d6; color: #7a4b00; border: 1px solid #e8c46b;
                 border-radius: 5px; padding: 9px;
             }
+            QLabel#firstRunNotice {
+                background: #dbeafe; color: #1e3a8a; border: 1px solid #93c5fd;
+                border-radius: 5px; padding: 9px; font-weight: 600;
+            }
             QLabel#compatibilityRiskBanner {
                 background: #7f1d1d; color: #fff7ed; border: 1px solid #f59e0b;
                 border-radius: 5px; padding: 7px; font-weight: 700;
@@ -924,18 +1046,40 @@ class MainWindow(QMainWindow):
             """
         )
 
+    def _active_mod_dir(self) -> str | None:
+        return self.config.mod_dir if self.config.mod_mode_enabled else None
+
     def _refresh_game_art(self) -> None:
-        logo = game_logo_pixmap(self.config.game_dir, (184, 52))
+        logo = game_logo_pixmap(
+            self.config.game_dir, (184, 52), mod_dir=self._active_mod_dir()
+        )
         if not logo.isNull():
             self.logo_label.setPixmap(logo)
             self.logo_label.setText("")
         else:
             self.logo_label.setPixmap(QPixmap())
             self.logo_label.setText("EU4 战局助手")
+        for key, icon in getattr(self, "stat_icon_labels", {}).items():
+            pixmap = game_interface_pixmap(
+                self.config.game_dir,
+                self.stat_icon_specs[key],
+                (26, 26),
+                mod_dir=self._active_mod_dir(),
+            )
+            icon.setPixmap(pixmap)
 
     def _show_control_dialog(self) -> None:
         self.left_rail.show()
         self.left_rail_toggle.setText("隐藏功能栏 ◀")
+
+    def _show_first_run_settings(self) -> None:
+        if self.config.setup_confirmed:
+            return
+        self.first_run_settings_notice.show()
+        self._show_tool_dialog("settings")
+        self.statusBar().showMessage(
+            "首次使用：请确认游戏、存档与归档目录后保存设置", 10000
+        )
 
     def _toggle_left_rail(self) -> None:
         visible = not self.left_rail.isHidden()
@@ -958,6 +1102,7 @@ class MainWindow(QMainWindow):
         bounds = self.map_scene.itemsBoundingRect()
         if not bounds.isEmpty():
             self.map_view.fitInView(bounds, Qt.AspectRatioMode.KeepAspectRatio)
+            self.map_view.announce_zoom()
 
     def _fill_map_view(self) -> None:
         """Fill the map viewport initially; users can still request the full world."""
@@ -969,6 +1114,7 @@ class MainWindow(QMainWindow):
         self.map_view.resetTransform()
         self.map_view.scale(scale, scale)
         self.map_view.centerOn(bounds.center())
+        self.map_view.announce_zoom()
 
     def _map_country_changed(self, _index: int) -> None:
         tag = self.map_country_combo.currentData()
@@ -983,6 +1129,133 @@ class MainWindow(QMainWindow):
                 self.country_table.blockSignals(False)
                 break
         self._country_selection_changed()
+
+    def _global_hotkey_triggered(self, hotkey_id: int) -> None:
+        if (
+            self._mini_window_hotkey_id is not None
+            and hotkey_id == self._mini_window_hotkey_id
+        ):
+            self._mini_toggle_window()
+        elif (
+            self._mini_lock_hotkey_id is not None
+            and hotkey_id == self._mini_lock_hotkey_id
+        ):
+            self._mini_toggle_lock()
+
+    def _register_global_hotkeys(self) -> None:
+        self._hotkey_manager.clear()
+        window_sequence = QKeySequence(self.config.mini_window_hotkey)
+        lock_sequence = QKeySequence(self.config.mini_window_lock_hotkey)
+        status_lines: list[str] = []
+        self._mini_window_hotkey_id = self._hotkey_manager.register(window_sequence)
+        window_error = self._hotkey_manager.last_error_message
+        if window_sequence == lock_sequence and not window_sequence.isEmpty():
+            self._mini_lock_hotkey_id = None
+            lock_error = "与小窗口开关键重复"
+        else:
+            self._mini_lock_hotkey_id = self._hotkey_manager.register(lock_sequence)
+            lock_error = self._hotkey_manager.last_error_message
+        if self._mini_window_hotkey_id is None:
+            LOGGER.warning("小窗口开关快捷键未注册：%s", self.config.mini_window_hotkey)
+            status_lines.append(f"开关：未注册（{window_error or '未知原因'}）")
+        else:
+            status_lines.append(f"开关：{self.config.mini_window_hotkey} 已注册")
+        if self._mini_lock_hotkey_id is None:
+            LOGGER.warning("小窗口锁定快捷键未注册：%s", self.config.mini_window_lock_hotkey)
+            status_lines.append(f"锁定：未注册（{lock_error or '未知原因'}）")
+        else:
+            status_lines.append(f"锁定：{self.config.mini_window_lock_hotkey} 已注册")
+        if hasattr(self, "hotkey_status_label"):
+            self.hotkey_status_label.setText("\n".join(status_lines))
+
+    def _mini_toggle_window(self) -> None:
+        if self.mini_window is None:
+            self.mini_window = MiniCountryWindow(
+                self.config.game_dir, self._active_mod_dir()
+            )
+            self.mini_window.switchCountry.connect(self._mini_switch_country)
+            self.mini_window.lockToggled.connect(self._mini_lock_announce)
+            self.mini_window.closeRequested.connect(self._mini_toggle_window)
+            self.mini_window.set_country(self._selected_country())
+        if self.mini_window.isVisible():
+            self._save_mini_window_position()
+            self.mini_window.hide()
+            self.statusBar().showMessage("小窗口模式已关闭", 3000)
+            return
+        if self.config.mini_window_pos:
+            try:
+                x, y = (int(part) for part in self.config.mini_window_pos.split(","))
+                self.mini_window.move(x, y)
+            except (ValueError, TypeError):
+                pass
+        self.mini_window.set_country(self._selected_country())
+        self.mini_window.set_switching_enabled(len(self._mini_player_tags()) > 1)
+        self.mini_window.show()
+        self.mini_window.raise_()
+        self.statusBar().showMessage("小窗口模式已开启", 3000)
+
+    def _save_mini_window_position(self) -> None:
+        if self.mini_window is None:
+            return
+        position = self.mini_window.pos()
+        serialized = f"{position.x()},{position.y()}"
+        if self.config.mini_window_pos == serialized:
+            return
+        self.config.mini_window_pos = serialized
+        save_config(self.config)
+
+    def _mini_toggle_lock(self) -> None:
+        if self.mini_window is None or not self.mini_window.isVisible():
+            return
+        self.mini_window.toggle_lock()
+        self._mini_lock_announce()
+
+    def _mini_lock_announce(self) -> None:
+        if self.mini_window is None:
+            return
+        locked = self.mini_window.is_locked
+        self.statusBar().showMessage("小窗口已锁定" if locked else "小窗口已解锁", 3000)
+        LOGGER.info("小窗口锁定状态：%s", "锁定" if locked else "解锁")
+
+    def _mini_switch_country(self, direction: int) -> None:
+        tags = self._mini_player_tags()
+        if not tags:
+            return
+        current = self._selected_country()
+        current_tag = current.tag if current is not None else None
+        if current_tag in tags:
+            index = tags.index(current_tag)
+            new_tag = tags[(index + direction) % len(tags)]
+        else:
+            new_tag = tags[0] if direction >= 0 else tags[-1]
+        self.selected_country_tag = new_tag
+        combo_index = self.map_country_combo.findData(new_tag)
+        if combo_index >= 0:
+            self.map_country_combo.setCurrentIndex(combo_index)
+        else:
+            self._country_selection_changed()
+
+    def _mini_player_tags(self) -> list[str]:
+        record = self.current_record
+        if record is None or record.multiplayer is not True:
+            return []
+        tags: list[str] = []
+        for player in record.players:
+            tag = player.country_tag
+            if tag in record.countries and tag not in tags:
+                tags.append(tag)
+        if not tags:
+            tags = [
+                country.tag
+                for country in record.countries.values()
+                if country.player_name
+            ]
+        return tags
+
+    def _update_mini_window(self) -> None:
+        if self.mini_window is not None and self.mini_window.isVisible():
+            self.mini_window.set_country(self._selected_country())
+            self.mini_window.set_switching_enabled(len(self._mini_player_tags()) > 1)
 
     def _unsupported_option_toggled(self, checked: bool) -> None:
         if checked:
@@ -1109,6 +1382,57 @@ class MainWindow(QMainWindow):
     def _save_directory_changed(self, _path: str) -> None:
         QTimer.singleShot(1000, self._scan_auto_archive)
 
+    def _archive_cleanup_toggled(self, checked: bool) -> None:
+        self.config.archive_cleanup_enabled = checked
+        save_config(self.config)
+        if checked:
+            QTimer.singleShot(0, self._schedule_archive_cleanup)
+
+    def _schedule_archive_cleanup(self) -> None:
+        if (
+            not self.config.archive_cleanup_enabled
+            or self.archive_cleanup_busy
+            or self.auto_archive_busy
+            or self.save_request_busy
+        ):
+            return
+        self.archive_cleanup_busy = True
+        root = self.archive_destination.text()
+
+        def done(result) -> None:
+            if result.removed:
+                removed_paths = [item.path for item in result.removed]
+                fingerprints = self.database.delete_paths(removed_paths)
+                for fingerprint in fingerprints:
+                    self.records.pop(fingerprint, None)
+                    index = self.save_combo.findData(fingerprint)
+                    if index >= 0:
+                        self.save_combo.removeItem(index)
+                released_mib = result.released_bytes / (1024 * 1024)
+                self.archive_log.append(
+                    f"自动清理完成：删除 {len(result.removed)} 份，释放 {released_mib:.2f} MiB"
+                )
+                for item in result.removed:
+                    self.archive_log.append(f"  {item.reason}：{item.path}")
+                if (
+                    self.current_record is not None
+                    and self.current_record.fingerprint in fingerprints
+                ):
+                    self.current_record = None
+                    self.selected_country_tag = None
+                    if self.save_combo.count():
+                        self.save_combo.setCurrentIndex(0)
+                        self._select_save()
+            for error in result.errors:
+                self.archive_log.append(f"自动清理警告：{error}")
+
+        self._run_worker(
+            cleanup_archives,
+            done,
+            root,
+            on_finished=lambda: setattr(self, "archive_cleanup_busy", False),
+        )
+
     def _scan_auto_archive(self) -> None:
         if (
             self.save_request_busy
@@ -1168,6 +1492,7 @@ class MainWindow(QMainWindow):
             self.save_combo.addItem(f"{record.game_date} — {record.path.name}", record.fingerprint)
         self.save_combo.setCurrentIndex(self.save_combo.findData(record.fingerprint))
         self._show_record(record)
+        QTimer.singleShot(0, self._schedule_archive_cleanup)
 
     def _import_verified_save(self, path: str | Path) -> None:
         self.import_status.setText(f"正在解析已验证存档：{Path(path).name}")
@@ -1243,53 +1568,40 @@ class MainWindow(QMainWindow):
     def _show_record(self, record: SaveRecord) -> None:
         self.records[record.fingerprint] = record
         self.current_record = record
-        year = record.game_date.split(".", 1)[0].strip() or "—"
-        self.map_year_badge.setText(f"当前年份：{year}年")
         countries = sorted(record.countries.values(), key=lambda item: item.tag)
         self.map_country_combo.blockSignals(True)
         self.map_country_combo.clear()
         for country in countries:
-            localized = country_label(country.tag)
             label = (
-                f"{localized} — {country.player_name}"
+                f"{country.tag} — {country.player_name}"
                 if country.player_name
-                else localized
+                else country.tag
             )
             self.map_country_combo.addItem(label, country.tag)
         self.map_country_combo.blockSignals(False)
         listed_countries = [country for country in countries if country.player_name]
-        sorting_enabled = self.country_table.isSortingEnabled()
-        self.country_table.setSortingEnabled(False)
         self.country_table.setRowCount(len(listed_countries))
         for row, country in enumerate(listed_countries):
             alerts = economic_alerts(country)
             values = [
-                (country.tag, None),
-                (country_name(country.tag), None),
-                (country.player_name or "", None),
-                (
-                    "/".join(str(value) for value in country.powers),
-                    sum(country.powers),
-                ),
-                (
-                    "/".join(str(value) for value in country.technology),
-                    sum(country.technology),
-                ),
-                (f"{country.monthly_income:.2f}", country.monthly_income),
-                (f"{country.monthly_expense:.2f}", country.monthly_expense),
-                (f"{country.monthly_interest:.2f}", country.monthly_interest),
-                (f"{country.treasury:.2f}", country.treasury),
-                (str(len(country.loans)), len(country.loans)),
-                (f"{country.total_debt:.2f}", country.total_debt),
-                (f"{country.army_strength:.0f}", country.army_strength),
-                ("；".join(alert.title for alert in alerts), len(alerts)),
+                country.tag,
+                country.player_name or "",
+                "/".join(str(value) for value in country.powers),
+                "/".join(str(value) for value in country.technology),
+                f"{country.monthly_income:.2f}",
+                f"{country.monthly_expense:.2f}",
+                f"{country.monthly_interest:.2f}",
+                f"{country.treasury:.2f}",
+                str(len(country.loans)),
+                f"{country.total_debt:.2f}",
+                f"{country.army_strength:.0f}",
+                "；".join(alert.title for alert in alerts),
             ]
-            for column, (value, sort_value) in enumerate(values):
-                item = SortableTableWidgetItem(value, sort_value)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
                 if alerts:
                     item.setBackground(QColor("#ffcccc"))
                 self.country_table.setItem(row, column, item)
-        self.country_table.setSortingEnabled(sorting_enabled)
         self.import_status.setText(
             f"{record.game_date}，版本 {record.game_version or '未知'}，"
             f"{'联机' if record.multiplayer else '单机/未知'}，玩家映射 {len(record.players)}，"
@@ -1334,9 +1646,11 @@ class MainWindow(QMainWindow):
             self.map_country_combo.setCurrentIndex(combo_index)
         self.map_country_combo.blockSignals(False)
         self.sidebar_country.setText(
-            f"{country_label(country.tag)} · {country.player_name or '非玩家国家'}"
+            f"{country.tag} · {country.player_name or '非玩家国家'}"
         )
-        flag = country_flag_pixmap(self.config.game_dir, country.tag)
+        flag = country_flag_pixmap(
+            self.config.game_dir, country.tag, mod_dir=self._active_mod_dir()
+        )
         if flag.isNull():
             self.sidebar_flag.setPixmap(QPixmap())
             self.sidebar_flag.setText(country.tag)
@@ -1416,6 +1730,7 @@ class MainWindow(QMainWindow):
         self.alert_text.setPlainText("\n".join(lines))
         self._render_country_charts(country)
         self._render_army_overview(country)
+        self._update_mini_window()
 
     def _render_country_charts(self, country: CountrySnapshot) -> None:
         income_names = {
@@ -1463,8 +1778,7 @@ class MainWindow(QMainWindow):
             "minority_expulsion": "驱逐少数族群", "other": "其它",
         }
         self.detail_country_title.setText(
-            f"{country_label(country.tag)} · "
-            f"{country.player_name or '非玩家国家'} — 国家详细分析"
+            f"{country.tag} · {country.player_name or '非玩家国家'} — 国家详细分析"
         )
         self.detail_country_summary.setText(
             f"国库 {country.treasury:,.2f}　上月收入 {country.monthly_income:,.2f}　"
@@ -1577,14 +1891,13 @@ class MainWindow(QMainWindow):
 
     def _render_army_overview(self, country: CountrySnapshot) -> None:
         self.army_dialog_title.setText(
-            f"{country_label(country.tag)} 军队 · {len(country.armies)} 支 · "
-            f"实际兵力 {country.army_strength:,.0f}"
+            f"{country.tag} 军队 · {len(country.armies)} 支 · 实际兵力 {country.army_strength:,.0f}"
         )
         self.army_overview_table.setRowCount(len(country.armies))
         for row, army in enumerate(country.armies):
             unit_types = "，".join(f"{name}:{count}" for name, count in army.unit_types.items())
             values = [
-                country_label(country.tag),
+                country.tag,
                 army.name,
                 str(army.location or "—"),
                 str(army.regiment_count),
@@ -1652,18 +1965,30 @@ class MainWindow(QMainWindow):
         if self.sidebar_collapsed:
             self._toggle_warning_sidebar()
 
-    def _ensure_map_index(self) -> None:
-        if self.map_index_busy:
+    def _ensure_map_index(self, *, force: bool = False) -> None:
+        if self.map_index_busy and not force:
             return
         self.map_index_busy = True
+        self.map_index_generation += 1
+        generation = self.map_index_generation
         self.map_status.setText("正在生成省份中心索引，首次运行可能需要数十秒…")
         cache = PROJECT_ROOT / "data" / "province_index.json"
+
+        def ready(provinces: dict[int, ProvinceInfo]) -> None:
+            if generation == self.map_index_generation:
+                self._map_index_ready(provinces)
+
+        def finished() -> None:
+            if generation == self.map_index_generation:
+                self.map_index_busy = False
+
         self._run_worker(
             load_or_build_province_index,
-            self._map_index_ready,
+            ready,
             self.config.game_dir,
             cache,
-            on_finished=lambda: setattr(self, "map_index_busy", False),
+            mod_dir=self._active_mod_dir(),
+            on_finished=finished,
         )
 
     def _map_index_ready(self, provinces: dict[int, ProvinceInfo]) -> None:
@@ -1679,10 +2004,33 @@ class MainWindow(QMainWindow):
             scene_position.x(),
             scene_position.y(),
             self.map_cache_dir,
+            self._active_mod_dir(),
         )
         if province_id is None:
             self._remove_army_popup()
             return
+        water = load_water_provinces(
+            self.config.game_dir,
+            self._active_mod_dir(),
+        )
+        if province_id in water:
+            self._remove_army_popup()
+            self.map_view.viewport().update()
+            return
+        self._activate_province(province_id, scene_position)
+
+    def _map_marker_clicked(self, province_id: int, scene_position: QPointF) -> None:
+        self._activate_province(province_id, scene_position)
+
+    def _activate_province(
+        self, province_id: int, scene_position: QPointF
+    ) -> None:
+        if self.current_record is None:
+            return
+        view_transform = QTransform(self.map_view.transform())
+        view_center = self.map_view.mapToScene(
+            self.map_view.viewport().rect().center()
+        )
         owner = self.current_record.province_owners.get(province_id)
         controller = self.current_record.province_controllers.get(province_id)
         if owner and owner in self.current_record.countries:
@@ -1692,6 +2040,10 @@ class MainWindow(QMainWindow):
             else:
                 self.selected_country_tag = owner
                 self._country_selection_changed()
+        # Updating the country details can relayout the splitter. A province click
+        # must not alter the user's current map zoom or center.
+        self.map_view.setTransform(view_transform)
+        self.map_view.centerOn(view_center)
         self._show_province_armies(province_id, scene_position, owner, controller)
 
     def _remove_army_popup(self) -> None:
@@ -1732,9 +2084,9 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         title = QLabel(
             f"<b>{info.name if info else '省份'} ({province_id})</b><br>"
-            f"原主 {country_label(owner)} · "
-            f"控制方 {country_label(controller or owner)}"
+            f"原主 {owner or '—'} · 控制方 {controller or owner or '—'}"
         )
+        title.setWordWrap(True)
         close_button = QToolButton()
         close_button.setText("×")
         close_button.setFixedSize(26, 26)
@@ -1742,22 +2094,67 @@ class MainWindow(QMainWindow):
         header.addWidget(close_button)
         layout.addLayout(header)
         total = sum(army.strength for _tag, army in armies)
-        layout.addWidget(QLabel(f"当地共 {len(armies)} 支军队 · 实际兵力 {total:,.0f}"))
+        total_label = QLabel(
+            f"当地共 {len(armies)} 支军队 · 实际兵力 {total:,.0f}"
+        )
+        total_label.setWordWrap(True)
+        layout.addWidget(total_label)
+        country_totals: dict[str, tuple[float, int, int]] = {}
+        for tag, army in armies:
+            strength, regiments, count = country_totals.get(tag, (0.0, 0, 0))
+            country_totals[tag] = (
+                strength + army.strength,
+                regiments + army.regiment_count,
+                count + 1,
+            )
+        summary = "；".join(
+            f"{tag} {strength:,.0f} 人/{regiments} 团/{count} 支"
+            for tag, (strength, regiments, count) in sorted(
+                country_totals.items(),
+                key=lambda item: (-item[1][0], -item[1][1], item[0]),
+            )
+        )
+        summary_label = QLabel(f"国家汇总：{summary}")
+        summary_label.setWordWrap(True)
+        layout.addWidget(summary_label)
+
+        army_list = QWidget()
+        army_layout = QVBoxLayout(army_list)
+        army_layout.setContentsMargins(0, 0, 0, 0)
+        army_layout.setSpacing(6)
         for tag, army in armies:
             unit_types = "，".join(
                 f"{name}:{count}" for name, count in army.unit_types.items()
             )
             row = QLabel(
-                f"<b>{country_label(tag)} · {army.name}</b><br>"
+                f"<b>{tag} · {army.name}</b><br>"
                 f"{army.regiment_count} 团 / {army.strength:,.0f} 兵力"
                 + (f"<br>{unit_types}" if unit_types else "")
             )
             row.setWordWrap(True)
-            layout.addWidget(row)
-        frame.setMaximumWidth(360)
-        frame.adjustSize()
-        viewport_position = self.map_view.mapFromScene(scene_position)
+            army_layout.addWidget(row)
+        army_layout.addStretch(1)
+
+        army_scroll = QScrollArea()
+        army_scroll.setObjectName("armyPopupScroll")
+        army_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        army_scroll.setWidgetResizable(True)
+        army_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        army_scroll.setWidget(army_list)
+        layout.addWidget(army_scroll, 1)
+
         viewport = self.map_view.viewport().rect()
+        maximum_width = max(1, min(380, viewport.width() - 12))
+        maximum_height = max(1, min(520, viewport.height() - 12))
+        frame.setMaximumSize(maximum_width, maximum_height)
+        frame.adjustSize()
+        frame.resize(
+            min(frame.width(), maximum_width),
+            min(frame.height(), maximum_height),
+        )
+        viewport_position = self.map_view.mapFromScene(scene_position)
         x = min(max(viewport_position.x() + 14, 0), max(0, viewport.width() - frame.width()))
         y = min(max(viewport_position.y() + 14, 0), max(0, viewport.height() - frame.height()))
         frame.move(x, y)
@@ -1790,38 +2187,156 @@ class MainWindow(QMainWindow):
             dict(record.province_owners),
             dict(record.province_controllers),
             cache_dir=self.map_cache_dir,
+            mod_dir=self._active_mod_dir(),
             on_error=lambda _trace: self.map_status.setText("政治地图渲染失败"),
         )
 
     def _political_map_ready(self, image) -> None:
         pixmap = QPixmap.fromImage(pil_to_qimage(image))
         self._remove_army_popup()
+        self.map_pixmap_item = None
         self.map_scene.clear()
-        self.map_scene.addPixmap(pixmap)
-        colors = [QColor("#ff1744"), QColor("#00e676"), QColor("#2979ff"), QColor("#ffea00")]
-        for country_index, country in enumerate(self.current_record.countries.values()):
-            color = colors[country_index % len(colors)]
-            for army in country.armies:
-                info = self.provinces.get(army.location or -1)
-                if info is None or info.center_x is None or info.center_y is None:
-                    continue
-                radius = max(4.0, min(18.0, math.sqrt(max(army.strength, 1)) / 50.0))
-                ellipse = self.map_scene.addEllipse(
-                    info.center_x - radius,
-                    info.center_y - radius,
-                    radius * 2,
-                    radius * 2,
-                    QPen(Qt.GlobalColor.black, 1),
-                    color,
+        self.army_dot_items.clear()
+        self.army_shield_items.clear()
+        self.army_marker_specs.clear()
+        self.army_shields_built = False
+        # Keep the PySide wrapper alive for as long as the scene displays the
+        # map. Without this reference, a later input event can collect the
+        # wrapper and remove the base pixmap while marker items remain.
+        self.map_pixmap_item = self.map_scene.addPixmap(pixmap)
+        mod_dir = self._active_mod_dir()
+        country_colors = load_country_colors(
+            self.config.game_dir, self.map_cache_dir, mod_dir
+        )
+        aggregates = aggregate_armies_by_province(self.current_record.countries)
+        for province_id, aggregate in aggregates.items():
+            info = self.provinces.get(province_id)
+            if info is None or info.center_x is None or info.center_y is None:
+                continue
+            dominant = aggregate.dominant_tag
+            rgb = country_colors.get(dominant, fallback_country_color(dominant))
+            radius = max(
+                4.0,
+                min(9.0, 3.0 + math.sqrt(max(aggregate.total_strength, 1)) / 90.0),
+            )
+            dot = self.map_scene.addEllipse(
+                -radius,
+                -radius,
+                radius * 2,
+                radius * 2,
+                QPen(Qt.GlobalColor.black, 1),
+                QColor(*rgb),
+            )
+            dot.setPos(info.center_x, info.center_y)
+            dot.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            dot.setData(0, province_id)
+            dot.setZValue(10)
+
+            country_summary = "；".join(
+                f"{tag} {item.strength:,.0f} 人/{item.regiment_count} 团"
+                for tag, item in sorted(
+                    aggregate.countries.items(),
+                    key=lambda pair: (-pair[1].strength, -pair[1].regiment_count, pair[0]),
                 )
-                ellipse.setToolTip(
-                    f"{country_label(country.tag)} {army.name}\n"
-                    f"{info.name} ({info.province_id})\n"
-                    f"{army.regiment_count} 团 / {army.strength:.0f} 兵力"
+            )
+            tooltip = (
+                f"{info.name} ({province_id})\n主盾徽：{dominant}\n"
+                f"总兵力 {aggregate.total_strength:,.0f} / {aggregate.total_regiments} 团\n"
+                f"{country_summary}"
+            )
+            dot.setToolTip(tooltip)
+            self.army_dot_items.append(dot)
+            dominant_strength = aggregate.countries[dominant].strength
+            self.army_marker_specs.append(
+                (
+                    province_id,
+                    info.center_x,
+                    info.center_y,
+                    dominant,
+                    dominant_strength,
+                    tooltip,
                 )
-                ellipse.setZValue(10)
+            )
         self._fill_map_view()
         QTimer.singleShot(0, self._fill_map_view)
+
+    def _build_army_shield_items(self) -> None:
+        if self.army_shields_built:
+            return
+        self.army_shields_built = True
+        mod_dir = self._active_mod_dir()
+        for (
+            province_id,
+            center_x,
+            center_y,
+            dominant,
+            dominant_strength,
+            tooltip,
+        ) in self.army_marker_specs:
+            shield_pixmap = self.country_shield_cache.get(dominant)
+            if shield_pixmap is None:
+                shield_pixmap = country_shield_pixmap(
+                    self.config.game_dir,
+                    dominant,
+                    (ARMY_SHIELD_SIZE, ARMY_SHIELD_SIZE),
+                    mod_dir=mod_dir,
+                )
+                self.country_shield_cache[dominant] = shield_pixmap
+
+            marker = QGraphicsItemGroup()
+            label = compact_army_strength(dominant_strength)
+            text = QGraphicsSimpleTextItem(label, marker)
+            label_font = QFont("Arial")
+            label_font.setPixelSize(10)
+            label_font.setWeight(QFont.Weight.Bold)
+            text.setFont(label_font)
+            text.setBrush(QColor("#f4f1df"))
+            text_bounds = text.boundingRect()
+            label_height = 15.0
+            label_width = max(25.0, text_bounds.width() + 8.0)
+            label_left = ARMY_SHIELD_SIZE / 2 - 5.0
+
+            background = QGraphicsRectItem(marker)
+            background.setRect(
+                label_left,
+                -label_height / 2,
+                label_width,
+                label_height,
+            )
+            background.setBrush(QColor(20, 61, 65, 232))
+            background.setPen(QPen(QColor("#c9b77f"), 1.0))
+            background.setZValue(0)
+            text.setPos(
+                label_left + (label_width - text_bounds.width()) / 2,
+                -text_bounds.height() / 2,
+            )
+            text.setZValue(1)
+
+            shield = QGraphicsPixmapItem(shield_pixmap, marker)
+            shield.setOffset(
+                -shield_pixmap.width() / 2,
+                -shield_pixmap.height() / 2,
+            )
+            shield.setZValue(2)
+
+            self.map_scene.addItem(marker)
+            marker.setPos(center_x, center_y)
+            marker.setFlag(
+                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations
+            )
+            marker.setData(0, province_id)
+            marker.setZValue(11)
+            marker.setToolTip(tooltip)
+            self.army_shield_items.append(marker)
+
+    def _update_army_marker_visibility(self, scale: float) -> None:
+        show_shields = scale >= ARMY_SHIELD_ZOOM_THRESHOLD
+        if show_shields:
+            self._build_army_shield_items()
+        for item in self.army_dot_items:
+            item.setVisible(not show_shields)
+        for item in self.army_shield_items:
+            item.setVisible(show_shields)
         self.map_status.setText(
             f"政治地图已生成 · {len(self.current_record.province_owners)} 个有主省份 · "
             "单击省份查看国家/驻军，左键拖动，滚轮缩放"
@@ -1879,6 +2394,8 @@ class MainWindow(QMainWindow):
             self.archive_log.setPlainText("\n".join(lines))
             self.archive_sources.clear()
             self.archive_sources.addItems(failed)
+            if any(item.result is not None for item in items):
+                QTimer.singleShot(0, self._schedule_archive_cleanup)
 
         self._run_worker(
             archive_many,
@@ -2063,13 +2580,38 @@ class MainWindow(QMainWindow):
             target.setText(path)
 
     def _save_settings(self) -> None:
-        self.config.game_dir = self.game_dir_edit.text()
+        proposed_game_dir = self.game_dir_edit.text().strip()
+        proposed_mod_enabled = self.mod_mode_checkbox.isChecked()
+        proposed_mod_dir = self.mod_dir_edit.text().strip()
+        if proposed_mod_enabled:
+            resources = GameResourceResolver.create(
+                proposed_game_dir, proposed_mod_dir
+            )
+            if not resources.is_valid_mod_root():
+                QMessageBox.warning(
+                    self,
+                    "Mod 目录无效",
+                    "请选择直接包含 map、common 或 gfx 文件夹的 Mod 内容目录。",
+                )
+                return
+        self.config.game_dir = proposed_game_dir
+        self.config.mod_mode_enabled = proposed_mod_enabled
+        self.config.mod_dir = proposed_mod_dir
         self.config.save_dir = self.save_dir_edit.text()
         self.config.archive_dir = self.settings_archive_edit.text()
         self.config.autosave_mode = self.schedule_combo.currentData()
         self.config.campaign_name = self.campaign_edit.text()
         self.config.allow_unsupported_version = self.allow_unsupported_checkbox.isChecked()
+        self.config.archive_cleanup_enabled = self.archive_cleanup_checkbox.isChecked()
+        self.config.mini_window_hotkey = self.mini_window_hotkey_edit.keySequence().toString(
+            QKeySequence.SequenceFormat.PortableText
+        )
+        self.config.mini_window_lock_hotkey = self.mini_lock_hotkey_edit.keySequence().toString(
+            QKeySequence.SequenceFormat.PortableText
+        )
+        self.config.setup_confirmed = True
         save_config(self.config)
+        self.first_run_settings_notice.hide()
         self.archive_destination.setText(self.config.archive_dir)
         self.bridge.close()
         self.bridge = BridgeClient(
@@ -2082,8 +2624,19 @@ class MainWindow(QMainWindow):
         if Path(self.config.save_dir).is_dir():
             self.save_watcher.addPath(self.config.save_dir)
         QTimer.singleShot(0, self._scan_auto_archive)
+        QTimer.singleShot(0, self._schedule_archive_cleanup)
+        clear_runtime_map_caches()
+        self.country_shield_cache.clear()
+        self.provinces = {}
+        self._ensure_map_index(force=True)
         self._refresh_game_art()
         self._refresh_version_status()
+        self._register_global_hotkeys()
+        if self.mini_window is not None:
+            self.mini_window.set_resource_roots(
+                self.config.game_dir, self._active_mod_dir()
+            )
+            self._update_mini_window()
         self.statusBar().showMessage("设置已保存", 3000)
 
     def _poll_bridge(self) -> None:
