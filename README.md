@@ -1,3 +1,7 @@
+# 纯ai生成代码
+
+# AI only，chinese only。If anyone needs other languages, please let me know.
+
 # EU4 联机自动存档与分析助手
 
 面向 Europa Universalis IV `1.37.5.0 / 491d` 的 Windows 客机自动存档、归档和存档分析工具。当前源码版本为 `1.2.0`。
