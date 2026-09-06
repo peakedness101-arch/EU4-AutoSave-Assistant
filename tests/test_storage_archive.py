@@ -34,6 +34,12 @@ def test_sqlite_import_and_deduplicate(tmp_path: Path) -> None:
         assert country["sailors"] == 2500
         assert country["max_sailors"] == 5000
         assert country["ship_count"] == 2
+        assert country["monarch_flags_json"] == '["current_monarch_flag"]'
+        save_row = database.connection.execute(
+            "SELECT global_flags_json FROM saves WHERE fingerprint = ?",
+            (record.fingerprint,),
+        ).fetchone()
+        assert save_row["global_flags_json"] == '["global_test_flag"]'
     finally:
         database.close()
 

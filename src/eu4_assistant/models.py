@@ -57,6 +57,7 @@ class CountrySnapshot:
     loans: list[LoanSnapshot] = field(default_factory=list)
     armies: list[ArmySnapshot] = field(default_factory=list)
     flags: set[str] = field(default_factory=set)
+    monarch_flags: set[str] = field(default_factory=set)
     variables: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -94,6 +95,7 @@ class SaveRecord:
     game_version: str | None = None
     multiplayer: bool | None = None
     fired_events: set[str] = field(default_factory=set)
+    global_flags: set[str] = field(default_factory=set)
     province_owners: dict[int, str] = field(default_factory=dict)
     province_controllers: dict[int, str] = field(default_factory=dict)
 

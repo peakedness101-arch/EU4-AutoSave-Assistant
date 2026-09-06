@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$ReleaseVersion = '1.2'
+    [string]$ReleaseVersion = '1.3'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +16,7 @@ $StagedApp = Join-Path $StagedBundle 'release\EU4_AutoSave_Assistant'
 $FinalBundle = Join-Path $DistributionRoot $BundleName
 $ZipPath = Join-Path $DistributionRoot ($BundleName + '.zip')
 $AppName = 'EU4_AutoSave_Assistant'
-$MaximumReleaseBytes = 110MB
+$MaximumReleaseBytes = 150MB
 $RakalyLicense = Join-Path $Workspace 'licenses\Rakaly.txt'
 
 function Assert-ChildPath([string]$Path, [string]$Parent) {
@@ -42,6 +42,7 @@ foreach ($required in @(
     (Join-Path $Workspace 'native\injector.cpp'),
     (Join-Path $Workspace 'native\launcher.cpp'),
     (Join-Path $Workspace 'data\country_names.html'),
+    (Join-Path $Workspace 'RELEASE_NOTES.txt'),
     $RakalyLicense
 )) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -94,7 +95,10 @@ foreach ($relative in @(
 )) {
     Remove-ExactPath (Join-Path $QtRoot $relative) $StagedApp
 }
-foreach ($relative in @('libcrypto-3.dll', 'libssl-3.dll', 'libcrypto-3-x64.dll', 'libssl-3-x64.dll')) {
+foreach ($relative in @(
+    'libcrypto-3.dll', 'libssl-3.dll', 'libcrypto-3-x64.dll', 'libssl-3-x64.dll',
+    'icuuc.dll', 'icudt78.dll'
+)) {
     Remove-ExactPath (Join-Path $Internal $relative) $StagedApp
 }
 foreach ($directory in @('random', 'fft')) {
@@ -143,10 +147,10 @@ if (Test-Path -LiteralPath (Join-Path $Workspace 'data\map_cache')) {
     Copy-Item -LiteralPath (Join-Path $Workspace 'data\map_cache') -Destination $DataOutput -Recurse
 }
 Copy-Item -LiteralPath (Join-Path $Workspace 'data\country_names.html') -Destination $DataOutput
-Copy-Item -LiteralPath (Join-Path $Workspace 'README.md'),(Join-Path $Workspace '新用户使用指南.html') -Destination $StagedApp
+Copy-Item -LiteralPath (Join-Path $Workspace 'README.md'),(Join-Path $Workspace '新用户使用指南.html'),(Join-Path $Workspace 'RELEASE_NOTES.txt') -Destination $StagedApp
 
 Copy-Item -LiteralPath (Join-Path $NativeBuildRoot 'EU4AutoSaveLauncher.exe') -Destination (Join-Path $StagedBundle 'EU4_AutoSave_Assistant.exe')
-Copy-Item -LiteralPath (Join-Path $Workspace 'README.md'),(Join-Path $Workspace '新用户使用指南.html'),(Join-Path $Workspace '版本说明.txt') -Destination $StagedBundle
+Copy-Item -LiteralPath (Join-Path $Workspace 'README.md'),(Join-Path $Workspace '新用户使用指南.html'),(Join-Path $Workspace 'RELEASE_NOTES.txt'),(Join-Path $Workspace '版本说明.txt') -Destination $StagedBundle
 Copy-Item -LiteralPath (Join-Path $Workspace 'data\country_names.html') -Destination (Join-Path $StagedBundle '国家列表.html')
 
 $ReleaseBytes = (Get-ChildItem -LiteralPath $StagedApp -Recurse -File | Measure-Object Length -Sum).Sum
@@ -174,6 +178,11 @@ $Manifest = [ordered]@{
     application = $AppName
     release = $ReleaseVersion
     required_build = '491d'
+    features = @(
+        'preserve_monitored_country'
+        'automatic_directory_detection'
+        'country_monarch_global_flags'
+    )
     generated_at = (Get-Date).ToString('o')
     size_bytes = [int64]$ReleaseBytes
     file_count = (Get-ChildItem -LiteralPath $StagedApp -Recurse -File).Count

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS saves (
     multiplayer INTEGER,
     local_player_tag TEXT,
     fired_events_json TEXT NOT NULL DEFAULT '[]',
+    global_flags_json TEXT NOT NULL DEFAULT '[]',
     imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS players (
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS countries (
     inflation REAL NOT NULL,
     development REAL NOT NULL,
     flags_json TEXT NOT NULL DEFAULT '[]',
+    monarch_flags_json TEXT NOT NULL DEFAULT '[]',
     variables_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (save_id, tag)
 );
@@ -101,9 +103,13 @@ class SaveDatabase:
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
         self._ensure_column("saves", "fired_events_json", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column("saves", "global_flags_json", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("saves", "game_version", "TEXT")
         self._ensure_column("saves", "multiplayer", "INTEGER")
         self._ensure_column("countries", "flags_json", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column(
+            "countries", "monarch_flags_json", "TEXT NOT NULL DEFAULT '[]'"
+        )
         self._ensure_column("countries", "variables_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column("countries", "sailors", "REAL NOT NULL DEFAULT 0")
         self._ensure_column("countries", "max_sailors", "REAL NOT NULL DEFAULT 0")
@@ -135,7 +141,7 @@ class SaveDatabase:
         with self.connection:
             self.connection.execute(
                 "INSERT INTO saves(fingerprint,path,format,game_date,build_id,game_version,multiplayer,"
-                "local_player_tag,fired_events_json) VALUES(?,?,?,?,?,?,?,?,?)",
+                "local_player_tag,fired_events_json,global_flags_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.fingerprint,
                     str(record.path),
@@ -146,6 +152,7 @@ class SaveDatabase:
                     None if record.multiplayer is None else int(record.multiplayer),
                     record.local_player_tag,
                     json.dumps(sorted(record.fired_events), ensure_ascii=False),
+                    json.dumps(sorted(record.global_flags), ensure_ascii=False),
                 ),
             )
             self.connection.executemany(
@@ -165,8 +172,8 @@ class SaveDatabase:
             "save_id,tag,player_name,treasury,monthly_income,monthly_expense,monthly_interest,"
             "estimated_loan,adm,dip,mil,adm_tech,dip_tech,mil_tech,ideas_json,manpower,"
             "max_manpower,sailors,max_sailors,ship_count,stability,inflation,development,"
-            "flags_json,variables_json"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "flags_json,monarch_flags_json,variables_json"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 save_id,
                 country.tag,
@@ -188,6 +195,7 @@ class SaveDatabase:
                 country.inflation,
                 country.development,
                 json.dumps(sorted(country.flags), ensure_ascii=False),
+                json.dumps(sorted(country.monarch_flags), ensure_ascii=False),
                 json.dumps(country.variables, ensure_ascii=False),
             ),
         )

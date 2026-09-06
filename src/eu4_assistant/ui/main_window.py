@@ -98,7 +98,17 @@ from ..compare import (
     forensic_differences,
     validate_same_game_version,
 )
-from ..config import AppConfig, PROJECT_ROOT, load_config, save_config
+from ..config import (
+    AppConfig,
+    PROJECT_ROOT,
+    documents_directory,
+    load_config,
+    save_config,
+)
+from ..discovery import (
+    detect_eu4_installation,
+    detect_eu4_save_directory,
+)
 from ..hotkeys import GlobalHotkeyManager
 from ..mapdata import (
     ProvinceInfo,
@@ -213,6 +223,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("EU4 联机自动存档与分析助手")
         self.resize(1500, 920)
         self.config = load_config()
+        self.directory_detection_summary = self._autodetect_config_directories()
         self.database = SaveDatabase(self.config.database_path)
         self.thread_pool = QThreadPool.globalInstance()
         self._active_workers: set[FunctionWorker] = set()
@@ -285,6 +296,40 @@ class MainWindow(QMainWindow):
         self.bridge_timer.start(5000)
         QTimer.singleShot(0, self._schedule_archive_cleanup)
         QTimer.singleShot(0, self._show_first_run_settings)
+
+    def _autodetect_config_directories(self) -> str:
+        changed = False
+        messages: list[str] = []
+
+        game_dir = detect_eu4_installation(self.config.game_dir)
+        if game_dir is not None:
+            detected_game_dir = str(game_dir)
+            if detected_game_dir != self.config.game_dir:
+                self.config.game_dir = detected_game_dir
+                changed = True
+            messages.append(f"已识别 EU4：{detected_game_dir}")
+        else:
+            messages.append("未自动找到 EU4 安装目录，请手动选择。")
+
+        save_dir = detect_eu4_save_directory(
+            self.config.save_dir,
+            documents_root=documents_directory(),
+        )
+        if save_dir is not None:
+            detected_save_dir = str(save_dir)
+            if detected_save_dir != self.config.save_dir:
+                self.config.save_dir = detected_save_dir
+                changed = True
+            if save_dir.is_dir():
+                messages.append(f"已识别存档：{detected_save_dir}")
+            else:
+                messages.append(f"预计存档目录：{detected_save_dir}（尚未创建）")
+        else:
+            messages.append("未自动找到 EU4 存档目录，请手动选择。")
+
+        if changed and self.config.setup_confirmed:
+            save_config(self.config)
+        return "\n".join(messages)
 
     def _build_control_dialog(self) -> None:
         self.left_rail = QFrame()
@@ -446,6 +491,12 @@ class MainWindow(QMainWindow):
         self.country_table.horizontalHeader().setStretchLastSection(True)
         self.country_table.itemSelectionChanged.connect(self._country_selection_changed)
         layout.addWidget(self.country_table)
+        self.global_flags_group = QGroupBox("全局 flag（0）")
+        global_flags_layout = QVBoxLayout(self.global_flags_group)
+        self.global_flags_list = QListWidget()
+        self.global_flags_list.setMaximumHeight(180)
+        global_flags_layout.addWidget(self.global_flags_list)
+        layout.addWidget(self.global_flags_group)
         self._register_tool_dialog("countries", "国家列表", tab, (1050, 620))
 
     def _build_country_details_dialog(self) -> None:
@@ -457,6 +508,21 @@ class MainWindow(QMainWindow):
         self.detail_country_summary.setWordWrap(True)
         outer.addWidget(self.detail_country_title)
         outer.addWidget(self.detail_country_summary)
+
+        flags_row = QHBoxLayout()
+        self.detail_country_flags_group = QGroupBox("国家 flag（0）")
+        country_flags_layout = QVBoxLayout(self.detail_country_flags_group)
+        self.detail_country_flags_list = QListWidget()
+        self.detail_country_flags_list.setMinimumHeight(120)
+        country_flags_layout.addWidget(self.detail_country_flags_list)
+        flags_row.addWidget(self.detail_country_flags_group, 1)
+        self.detail_monarch_flags_group = QGroupBox("当前君主 flag（0）")
+        monarch_flags_layout = QVBoxLayout(self.detail_monarch_flags_group)
+        self.detail_monarch_flags_list = QListWidget()
+        self.detail_monarch_flags_list.setMinimumHeight(120)
+        monarch_flags_layout.addWidget(self.detail_monarch_flags_list)
+        flags_row.addWidget(self.detail_monarch_flags_group, 1)
+        outer.addLayout(flags_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -924,6 +990,11 @@ class MainWindow(QMainWindow):
         mod_hint.setObjectName("subtleText")
         save_button = QPushButton("选择存档目录")
         save_button.clicked.connect(lambda: self._choose_directory(self.save_dir_edit))
+        detect_button = QPushButton("自动检测游戏与存档目录")
+        detect_button.clicked.connect(self._detect_directories_into_settings)
+        self.directory_detection_label = QLabel(self.directory_detection_summary)
+        self.directory_detection_label.setWordWrap(True)
+        self.directory_detection_label.setObjectName("subtleText")
         archive_button = QPushButton("选择默认归档目录")
         archive_button.clicked.connect(lambda: self._choose_directory(self.settings_archive_edit))
         self.allow_unsupported_checkbox = QCheckBox(
@@ -971,6 +1042,8 @@ class MainWindow(QMainWindow):
         form.addRow("", mod_hint)
         form.addRow("EU4 存档目录", self.save_dir_edit)
         form.addRow("", save_button)
+        form.addRow("", detect_button)
+        form.addRow("检测结果", self.directory_detection_label)
         form.addRow("默认归档目录", self.settings_archive_edit)
         form.addRow("", archive_button)
         form.addRow("非 491d 使用", self.allow_unsupported_checkbox)
@@ -1566,6 +1639,7 @@ class MainWindow(QMainWindow):
             )
 
     def _show_record(self, record: SaveRecord) -> None:
+        previously_selected_tag = self.selected_country_tag
         self.records[record.fingerprint] = record
         self.current_record = record
         countries = sorted(record.countries.values(), key=lambda item: item.tag)
@@ -1602,16 +1676,23 @@ class MainWindow(QMainWindow):
                 if alerts:
                     item.setBackground(QColor("#ffcccc"))
                 self.country_table.setItem(row, column, item)
+        self._populate_flag_list(self.global_flags_list, record.global_flags)
+        self.global_flags_group.setTitle(f"全局 flag（{len(record.global_flags)}）")
         self.import_status.setText(
             f"{record.game_date}，版本 {record.game_version or '未知'}，"
             f"{'联机' if record.multiplayer else '单机/未知'}，玩家映射 {len(record.players)}，"
             f"现存国家 {len(countries)}"
         )
         if countries:
-            preferred_tag = record.local_player_tag or countries[0].tag
+            preferred_tag = (
+                previously_selected_tag
+                if previously_selected_tag in record.countries
+                else record.local_player_tag or countries[0].tag
+            )
             self.selected_country_tag = preferred_tag
             self._country_selection_changed()
         else:
+            self.selected_country_tag = None
             self.alert_text.clear()
         self._refresh_player_alert_overview()
         if self.provinces:
@@ -1787,6 +1868,14 @@ class MainWindow(QMainWindow):
             f"人力 {country.manpower_people:,.0f}/{country.max_manpower_people:,.0f} 人　"
             f"海军 {country.ship_count:,} 艘　水手 {country.sailors:,.0f}/{country.max_sailors:,.0f} 人　"
             f"宗教 {country.religion or '—'}　文化 {country.primary_culture or '—'}"
+        )
+        self._populate_flag_list(self.detail_country_flags_list, country.flags)
+        self.detail_country_flags_group.setTitle(
+            f"国家 flag（{len(country.flags)}）"
+        )
+        self._populate_flag_list(self.detail_monarch_flags_list, country.monarch_flags)
+        self.detail_monarch_flags_group.setTitle(
+            f"当前君主 flag（{len(country.monarch_flags)}）"
         )
         if country.ideas:
             self.detail_ideas.setText(
@@ -2578,6 +2667,35 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "选择目录", target.text())
         if path:
             target.setText(path)
+
+    @staticmethod
+    def _populate_flag_list(widget: QListWidget, flags: set[str]) -> None:
+        widget.clear()
+        widget.addItems(sorted(flags, key=str.casefold))
+
+    def _detect_directories_into_settings(self) -> None:
+        messages: list[str] = []
+        game_dir = detect_eu4_installation(self.game_dir_edit.text().strip())
+        if game_dir is not None:
+            self.game_dir_edit.setText(str(game_dir))
+            messages.append(f"已识别 EU4：{game_dir}")
+        else:
+            messages.append("未自动找到 EU4 安装目录，请手动选择。")
+
+        save_dir = detect_eu4_save_directory(
+            self.save_dir_edit.text().strip(),
+            documents_root=documents_directory(),
+        )
+        if save_dir is not None:
+            self.save_dir_edit.setText(str(save_dir))
+            if save_dir.is_dir():
+                messages.append(f"已识别存档：{save_dir}")
+            else:
+                messages.append(f"预计存档目录：{save_dir}（尚未创建）")
+        else:
+            messages.append("未自动找到 EU4 存档目录，请手动选择。")
+        self.directory_detection_summary = "\n".join(messages)
+        self.directory_detection_label.setText(self.directory_detection_summary)
 
     def _save_settings(self) -> None:
         proposed_game_dir = self.game_dir_edit.text().strip()

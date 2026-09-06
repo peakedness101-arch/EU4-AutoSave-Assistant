@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -37,41 +37,9 @@ def documents_directory() -> Path:
     return Path.home() / "Documents"
 
 
-def default_game_directory() -> str:
-    """Find a local EU4 install without embedding a developer machine path."""
-    configured = os.environ.get("EU4_GAME_DIR")
-    if configured:
-        return str(Path(configured).expanduser())
-
-    steam_roots: list[Path] = []
-    if os.name == "nt":
-        try:
-            import winreg
-
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam"
-            ) as key:
-                value, _kind = winreg.QueryValueEx(key, "SteamPath")
-            if value:
-                steam_roots.append(Path(str(value)))
-        except (OSError, ValueError):
-            pass
-        program_files = os.environ.get("ProgramFiles(x86)")
-        if program_files:
-            steam_roots.append(Path(program_files) / "Steam")
-
-    for steam_root in steam_roots:
-        candidate = (
-            steam_root / "steamapps" / "common" / "Europa Universalis IV"
-        )
-        if (candidate / "eu4.exe").is_file():
-            return str(candidate)
-    return ""
-
-
 @dataclass(slots=True)
 class AppConfig:
-    game_dir: str = field(default_factory=default_game_directory)
+    game_dir: str = ""
     save_dir: str = str(
         documents_directory()
         / "Paradox Interactive"

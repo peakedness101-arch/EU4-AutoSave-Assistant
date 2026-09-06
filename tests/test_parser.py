@@ -24,6 +24,9 @@ players_countries={
 }
 date=1500.1.1
 player="ENG"
+flags={
+\tglobal_test_flag=1498.1.1
+}
 provinces={
 -236={
 		name="London"
@@ -58,6 +61,34 @@ countries={
 \t\tmax_sailors=5000.0
 \t\tflags={
 \t\t\ttest_flag=1499.1.1
+\t\t}
+\t\thistory={
+\t\t\t1490.1.1={
+\t\t\t\tmonarch={
+\t\t\t\t\tid={
+\t\t\t\t\t\tid=7
+\t\t\t\t\t\ttype=48
+\t\t\t\t\t}
+\t\t\t\t\truler_flags={
+\t\t\t\t\t\tcurrent_monarch_flag=1499.1.1
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\t1495.1.1={
+\t\t\t\tmonarch={
+\t\t\t\t\tid={
+\t\t\t\t\t\tid=8
+\t\t\t\t\t\ttype=48
+\t\t\t\t\t}
+\t\t\t\t\truler_flags={
+\t\t\t\t\t\tformer_monarch_flag=1499.1.1
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t}
+\t\tmonarch={
+\t\t\tid=7
+\t\t\ttype=48
 \t\t}
 \t\tvariables={
 \t\t\ttest_variable=42
@@ -147,8 +178,10 @@ def test_parse_minimal_plaintext_save(tmp_path: Path) -> None:
     assert eng.max_sailors == 5000
     assert eng.ship_count == 2
     assert eng.flags == {"test_flag"}
+    assert eng.monarch_flags == {"current_monarch_flag"}
     assert eng.variables == {"test_variable": "42"}
     assert record.fired_events == {"test.1"}
+    assert record.global_flags == {"global_test_flag"}
     assert record.province_owners == {236: "ENG", 183: "FRA"}
     assert record.province_controllers == {236: "FRA"}
 

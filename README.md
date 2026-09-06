@@ -4,7 +4,7 @@
 
 # EU4 联机自动存档与分析助手
 
-面向 Europa Universalis IV `1.37.5.0 / 491d` 的 Windows 客机自动存档、归档和存档分析工具。当前源码版本为 `1.2.0`。
+面向 Europa Universalis IV `1.37.5.0 / 491d` 的 Windows 客机自动存档、归档和存档分析工具。当前源码版本为 `1.3.0`。
 
 本仓库是可独立构建的维护源码，不包含用户存档、配置、运行日志、数据库、游戏美术资源、地图缓存、预编译原生模块或下载后的工具链。发行版由仓库内 Python 与 C++ 源码重新构建。
 
@@ -19,7 +19,9 @@
 - 可拖动、缩放的政治地图、省份所有权与控制权叠加、军队位置和兵力标记。
 - 原版及单个 Mod 资源覆盖；缺失的 Mod 文件自动回退到用户本地原版游戏目录。
 - 中文国名、国家经济与点数分析、玩家经济告警、多存档对比和贷款容量估算。
-- 半透明置顶小窗口、多人玩家国家切换、鼠标穿透锁定和可配置的全局快捷键。
+- 国家列表显示全局 flag；国家详情区分国家 flag 与通过 `id + type` 精确关联的当前君主 flag。
+- 半透明置顶小窗口、多人玩家国家切换、鼠标穿透锁定和可配置的全局快捷键；重新读档后会保留仍存在的监视国家。
+- 自动检测 Steam 游戏安装目录、本地/OneDrive 文档存档目录和 Steam Cloud 存档目录，仍允许手动覆盖。
 - 可轮转运行日志、Python 崩溃报告和原生故障日志。
 
 ## 仓库结构
@@ -113,12 +115,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 3. 用仓库内 `.venv` 执行 PyInstaller，并裁剪未使用的 Qt 模块和插件。
 4. 运行离屏发行版冒烟测试。
 5. 清除日志、配置、数据库和归档等运行痕迹。
-6. 在 `dist` 生成 `EU4_AutoSave_Assistant_Final_491d_1.2` 目录和同名 ZIP。
+6. 在 `dist` 生成 `EU4_AutoSave_Assistant_Final_491d_1.3` 目录和同名 ZIP。
 
 可指定发行版本：
 
 ```powershell
-.\scripts\package.ps1 -ReleaseVersion '1.2.1'
+.\scripts\package.ps1 -ReleaseVersion '1.3.1'
 ```
 
 ## 公开仓库边界

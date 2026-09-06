@@ -59,6 +59,69 @@ def test_world_map_is_the_only_main_page(window: MainWindow) -> None:
     assert all(not dialog.isModal() for dialog in window.tool_dialogs.values())
 
 
+def test_settings_can_autodetect_game_and_save_directories(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    game = tmp_path / "game"
+    saves = tmp_path / "saves"
+    game.mkdir()
+    saves.mkdir()
+    monkeypatch.setattr(
+        main_window_module, "detect_eu4_installation", lambda _configured: game
+    )
+    monkeypatch.setattr(
+        main_window_module,
+        "detect_eu4_save_directory",
+        lambda _configured, **_kwargs: saves,
+    )
+    window.game_dir_edit.clear()
+    window.save_dir_edit.clear()
+
+    window._detect_directories_into_settings()
+
+    assert window.game_dir_edit.text() == str(game)
+    assert window.save_dir_edit.text() == str(saves)
+    assert "已识别 EU4" in window.directory_detection_label.text()
+
+
+def test_flag_lists_show_global_country_and_current_monarch_flags(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    country = CountrySnapshot(
+        tag="USA",
+        player_name="Tester",
+        flags={"country_beta", "country_alpha"},
+        monarch_flags={"ruler_current"},
+    )
+    record = SaveRecord(
+        path=Path("flags.eu4"),
+        fingerprint="flags",
+        format="plaintext",
+        game_date="1767.7.27",
+        build_id="491d",
+        local_player_tag="USA",
+        players=[],
+        countries={"USA": country},
+        global_flags={"world_beta", "world_alpha"},
+    )
+    monkeypatch.setattr(window, "_ensure_map_index", lambda **_kwargs: None)
+
+    window._show_record(record)
+
+    assert [window.global_flags_list.item(i).text() for i in range(2)] == [
+        "world_alpha",
+        "world_beta",
+    ]
+    assert [window.detail_country_flags_list.item(i).text() for i in range(2)] == [
+        "country_alpha",
+        "country_beta",
+    ]
+    assert window.detail_monarch_flags_list.item(0).text() == "ruler_current"
+    assert window.global_flags_group.title() == "全局 flag（2）"
+    assert window.detail_country_flags_group.title() == "国家 flag（2）"
+    assert window.detail_monarch_flags_group.title() == "当前君主 flag（1）"
+
+
 def test_left_function_rail_toggles_from_map_button(window: MainWindow) -> None:
     assert not window.left_rail.isHidden()
     QTest.mouseClick(window.left_rail_toggle, Qt.MouseButton.LeftButton)
@@ -372,9 +435,6 @@ def test_ocean_click_keeps_map_scene_and_view_unchanged(
         lambda province_id, _position: activations.append(province_id),
     )
 
-    # Exercise the ocean branch directly. Qt's offscreen platform can corrupt
-    # its native backing store when QTest synthesizes a viewport click over a
-    # large QGraphicsPixmapItem during interpreter shutdown on Windows.
     window._map_clicked(
         window.map_view.mapToScene(window.map_view.viewport().rect().center())
     )

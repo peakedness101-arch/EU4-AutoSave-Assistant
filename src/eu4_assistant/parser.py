@@ -169,6 +169,17 @@ def _string_value(data: bytes, key: bytes, indent: int, default: str = "") -> st
     return _decode(value) if value is not None else default
 
 
+def _flag_names(block: bytes | None, indent: int) -> set[str]:
+    if not block:
+        return set()
+    pattern = rb"(?m)^" + (rb"\t" * indent) + rb'("?[^\s={}"]+"?)='
+    return {
+        _decode(match.group(1).strip(b'"'))
+        for match in re.finditer(pattern, block)
+        if match.group(1).strip(b'"')
+    }
+
+
 def _number_list(block: bytes) -> list[float]:
     open_index = block.find(b"{")
     close_index = block.rfind(b"}")
@@ -206,7 +217,6 @@ def _read_container(path: Path) -> tuple[str, bytes, bytes, str]:
 def _rakaly_executable() -> Path:
     candidates = (
         PROJECT_ROOT / "native" / "rakaly.exe",
-        PROJECT_ROOT / ".tools" / "rakaly-0.8.19" / "rakaly.exe",
         PROJECT_ROOT / "tools" / "rakaly" / "rakaly.exe",
     )
     for candidate in candidates:
@@ -479,6 +489,30 @@ def _parse_ship_count(country: bytes) -> int:
     )
 
 
+def _parse_current_monarch_flags(country: bytes) -> set[str]:
+    current = _direct_block(country, b"monarch", 2)
+    history = _direct_block(country, b"history", 2)
+    if current is None or history is None:
+        return set()
+    current_id = _int_value(current, b"id", 3, -1)
+    current_type = _int_value(current, b"type", 3, -1)
+    if current_id < 0:
+        return set()
+    for monarch in reversed(_direct_blocks(history, b"monarch", 4)):
+        identity = _direct_block(monarch, b"id", 5)
+        if identity is None:
+            continue
+        if (
+            _int_value(identity, b"id", 6, -1) == current_id
+            and _int_value(identity, b"type", 6, -1) == current_type
+        ):
+            return _flag_names(
+                _direct_block(monarch, b"ruler_flags", 5),
+                6,
+            )
+    return set()
+
+
 def parse_country_block(
     tag: str,
     block: bytes,
@@ -520,11 +554,7 @@ def parse_country_block(
         match.group(1).decode("ascii", errors="replace"): int(match.group(2))
         for match in re.finditer(rb"(?m)^\t\t\t([A-Za-z0-9_]+)=(-?\d+)", ideas_block)
     }
-    flags_block = _direct_block(block, b"flags", 2) or b""
-    flags = {
-        match.group(1).decode("utf-8", errors="replace")
-        for match in re.finditer(rb"(?m)^\t\t\t([^\s=]+)=", flags_block)
-    }
+    flags = _flag_names(_direct_block(block, b"flags", 2), 3)
     variables_block = _direct_block(block, b"variables", 2) or b""
     variables = {
         match.group(1).decode("utf-8", errors="replace"): _decode(match.group(2).strip())
@@ -562,6 +592,7 @@ def parse_country_block(
         loans=_parse_loans(block),
         armies=_parse_armies(block),
         flags=flags,
+        monarch_flags=_parse_current_monarch_flags(block),
         variables=variables,
     )
 
@@ -649,6 +680,11 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
             if token.strip(b'"')
         }
 
+    try:
+        global_flags = _flag_names(_top_level_block(gamestate, b"flags"), 1)
+    except SaveParseError:
+        global_flags = set()
+
     province_owners, province_controllers = _parse_province_state(gamestate)
     return SaveRecord(
         path=save_path.resolve(),
@@ -664,6 +700,7 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
             multiplayer_match.group(1) == b"yes" if multiplayer_match else None
         ),
         fired_events=fired_events,
+        global_flags=global_flags,
         province_owners=province_owners,
         province_controllers=province_controllers,
     )

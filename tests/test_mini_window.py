@@ -160,6 +160,37 @@ def test_mini_window_cycles_countries(window: MainWindow) -> None:
     assert window.selected_country_tag == "ENG"
 
 
+def test_reparse_preserves_monitored_country_when_it_still_exists(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window.selected_country_tag = "FRA"
+    window._mini_toggle_window()
+    monkeypatch.setattr(window, "_ensure_map_index", lambda **_kwargs: None)
+
+    updated = make_record()
+    updated.fingerprint = "mini-updated"
+    updated.countries["FRA"].treasury = 123
+    window._show_record(updated)
+
+    assert window.selected_country_tag == "FRA"
+    assert "FRA" in window.mini_window.title_label.text()
+    assert window.mini_window.stat_rows["treasury"].text() == "123.00"
+
+
+def test_reparse_falls_back_when_monitored_country_no_longer_exists(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window.selected_country_tag = "FRA"
+    monkeypatch.setattr(window, "_ensure_map_index", lambda **_kwargs: None)
+    updated = make_record()
+    updated.fingerprint = "mini-without-france"
+    del updated.countries["FRA"]
+
+    window._show_record(updated)
+
+    assert window.selected_country_tag == "ENG"
+
+
 def test_mini_window_switches_only_multiplayer_player_countries(window: MainWindow) -> None:
     record = make_record()
     record.countries["SPA"] = CountrySnapshot(tag="SPA", treasury=999)
