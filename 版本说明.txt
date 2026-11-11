@@ -1,4 +1,4 @@
-EU4 AutoSave Assistant 1.3.0 (491d)
+EU4 AutoSave Assistant 1.4.0 (491d)
 
 本版更新：
 1. 小窗口重新读档后保留上次监视的国家；仅当该国已不存在时回退到本国。

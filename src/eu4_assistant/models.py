@@ -83,6 +83,24 @@ class CountrySnapshot:
 
 
 @dataclass(slots=True)
+class ActiveWarSnapshot:
+    attackers: set[str] = field(default_factory=set)
+    defenders: set[str] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class ArmyConcentrationWarning:
+    country_tag: str
+    province_id: int
+    regiment_count: int
+    total_regiments: int
+
+    @property
+    def ratio(self) -> float:
+        return self.regiment_count / self.total_regiments
+
+
+@dataclass(slots=True)
 class SaveRecord:
     path: Path
     fingerprint: str
@@ -98,6 +116,12 @@ class SaveRecord:
     global_flags: set[str] = field(default_factory=set)
     province_owners: dict[int, str] = field(default_factory=dict)
     province_controllers: dict[int, str] = field(default_factory=dict)
+    province_names: dict[int, str] = field(default_factory=dict)
+    active_wars: list[ActiveWarSnapshot] = field(default_factory=list)
+
+    @property
+    def existing_tags(self) -> set[str]:
+        return set(self.province_owners.values()) & self.countries.keys()
 
 
 @dataclass(slots=True)

@@ -76,7 +76,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..alerts import economic_alerts
+from ..alerts import army_concentration_warnings, economic_alerts
 from ..army_markers import aggregate_armies_by_province, compact_army_strength
 from ..archive import (
     archive_many,
@@ -243,6 +243,12 @@ class MainWindow(QMainWindow):
         self.auto_archive_busy = False
         self.archive_cleanup_busy = False
         self.auto_archive_seen: dict[str, int] = {}
+        self.auto_parse_pending: set[str] = set()
+        self.auto_parsed: dict[str, tuple[tuple[int, int], str]] = {}
+        self.auto_parse_failed: dict[str, tuple[int, int]] = {}
+        self.auto_import_generation = 0
+        self.auto_latest_order = (-1, -1)
+        self._closing = False
         self.filling_calculator = False
         self.map_index_busy = False
         self.map_index_generation = 0
@@ -449,6 +455,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         LOGGER.info("主窗口正在关闭")
+        self._closing = True
         if hasattr(self, "bridge_timer"):
             self.bridge_timer.stop()
         if hasattr(self, "save_watcher"):
@@ -1264,6 +1271,7 @@ class MainWindow(QMainWindow):
         self.mini_window.set_country(self._selected_country())
         self.mini_window.set_switching_enabled(len(self._mini_player_tags()) > 1)
         self.mini_window.show()
+        self._update_mini_window()
         self.mini_window.raise_()
         self.statusBar().showMessage("小窗口模式已开启", 3000)
 
@@ -1315,20 +1323,46 @@ class MainWindow(QMainWindow):
         tags: list[str] = []
         for player in record.players:
             tag = player.country_tag
-            if tag in record.countries and tag not in tags:
+            if tag in record.existing_tags and tag not in tags:
                 tags.append(tag)
         if not tags:
             tags = [
                 country.tag
                 for country in record.countries.values()
-                if country.player_name
+                if country.player_name and country.tag in record.existing_tags
             ]
         return tags
 
     def _update_mini_window(self) -> None:
         if self.mini_window is not None and self.mini_window.isVisible():
-            self.mini_window.set_country(self._selected_country())
+            country = self._selected_country()
+            record = self.current_record
+            if record is not None and country is not None and country.tag not in record.existing_tags:
+                country = None
+            self.mini_window.set_country(country)
             self.mini_window.set_switching_enabled(len(self._mini_player_tags()) > 1)
+            if record is None:
+                self.mini_window.set_army_warnings("尚未读取存档", [])
+            elif record.local_player_tag not in record.existing_tags:
+                self.mini_window.set_army_warnings(
+                    f"无法识别本机玩家国家 · {record.game_date}", []
+                )
+            else:
+                warnings = army_concentration_warnings(record)
+                lines = []
+                for warning in warnings:
+                    province = warning.province_id
+                    info = self.provinces.get(province)
+                    name = record.province_names.get(province) or (info.name if info else "未知省份")
+                    lines.append(
+                        f"{name}（{province}）｜{warning.regiment_count} / "
+                        f"{warning.total_regiments} 团，{warning.ratio:.1%}"
+                    )
+                self.mini_window.set_army_warnings(
+                    f"本机 {record.local_player_tag} · {record.game_date}\n"
+                    + (f"⚠ 军队集中警告（{len(warnings)}）" if warnings else "军队集中：无警告"),
+                    lines,
+                )
 
     def _unsupported_option_toggled(self, checked: bool) -> None:
         if checked:
@@ -1363,17 +1397,20 @@ class MainWindow(QMainWindow):
     ) -> None:
         worker = FunctionWorker(function, *args, **kwargs)
         self._active_workers.add(worker)
-        worker.signals.result.connect(on_result)
+        worker.signals.result.connect(lambda result: None if self._closing else on_result(result))
 
         def handle_error(trace: str) -> None:
-            self._show_worker_error(trace)
+            if self._closing:
+                return
             if on_error is not None:
                 on_error(trace)
+            else:
+                self._show_worker_error(trace)
 
         worker.signals.error.connect(handle_error)
         def handle_finished() -> None:
             self._active_workers.discard(worker)
-            if on_finished is not None:
+            if on_finished is not None and not self._closing:
                 on_finished()
 
         worker.signals.finished.connect(handle_finished)
@@ -1463,10 +1500,12 @@ class MainWindow(QMainWindow):
 
     def _schedule_archive_cleanup(self) -> None:
         if (
-            not self.config.archive_cleanup_enabled
+            self._closing
+            or not self.config.archive_cleanup_enabled
             or self.archive_cleanup_busy
             or self.auto_archive_busy
             or self.save_request_busy
+            or self.auto_parse_pending
         ):
             return
         self.archive_cleanup_busy = True
@@ -1508,7 +1547,8 @@ class MainWindow(QMainWindow):
 
     def _scan_auto_archive(self) -> None:
         if (
-            self.save_request_busy
+            self._closing
+            or self.save_request_busy
             or self.auto_archive_busy
             or not self.auto_archive_checkbox.isChecked()
         ):
@@ -1519,15 +1559,28 @@ class MainWindow(QMainWindow):
             if not candidate.is_file():
                 continue
             try:
-                mtime = candidate.stat().st_mtime_ns
+                stat = candidate.stat()
+                mtime = stat.st_mtime_ns
                 key = str(candidate.resolve())
             except OSError:
+                continue
+            signature = (stat.st_size, mtime)
+            if key in self.auto_parse_pending or self.auto_parse_failed.get(key) == signature:
                 continue
             if self.auto_archive_seen.get(key) != mtime:
                 pending.append((mtime, candidate, key))
         if not pending:
             return
         mtime, candidate, key = min(pending, key=lambda item: item[0])
+        try:
+            stat = candidate.stat()
+        except OSError:
+            return
+        signature = (stat.st_size, stat.st_mtime_ns)
+        parsed = self.auto_parsed.get(key)
+        if parsed is None or parsed[0] != signature:
+            self._import_verified_save(candidate)
+            return
         self.auto_archive_seen[key] = mtime
         self.auto_archive_busy = True
         archive_root = self.archive_destination.text()
@@ -1547,33 +1600,90 @@ class MainWindow(QMainWindow):
         def done(payload):
             result, error = payload
             self.auto_archive_busy = False
+            if self._closing:
+                return
             if error:
                 self.auto_archive_seen.pop(key, None)
                 self.archive_log.append(f"自动归档失败：{error}")
                 QTimer.singleShot(5000, self._scan_auto_archive)
                 return
             self.archive_log.append(f"自动归档完成：{result.destination}")
-            self._import_verified_save(result.destination)
+            record = self.records.get(result.fingerprint)
+            if record is not None:
+                record.path = Path(result.destination)
+                self.database.import_record(record)
+                index = self.save_combo.findData(record.fingerprint)
+                if index >= 0:
+                    self.save_combo.setItemText(index, f"{record.game_date} — {record.path.name}")
             QTimer.singleShot(0, self._scan_auto_archive)
+            QTimer.singleShot(0, self._schedule_archive_cleanup)
 
         self._run_worker(run_auto_archive, done)
 
-    def _auto_archive_imported(self, record: SaveRecord) -> None:
-        self.database.import_record(record)
-        self.records[record.fingerprint] = record
-        if self.save_combo.findData(record.fingerprint) < 0:
-            self.save_combo.addItem(f"{record.game_date} — {record.path.name}", record.fingerprint)
-        self.save_combo.setCurrentIndex(self.save_combo.findData(record.fingerprint))
-        self._show_record(record)
-        QTimer.singleShot(0, self._schedule_archive_cleanup)
-
     def _import_verified_save(self, path: str | Path) -> None:
-        self.import_status.setText(f"正在解析已验证存档：{Path(path).name}")
+        if self._closing:
+            return
+        path = Path(path).resolve()
+        key = str(path)
+        if key in self.auto_parse_pending:
+            return
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            self.archive_log.append(f"自动解析失败：{path.name}：{exc}")
+            self.import_status.setText(f"自动解析失败：{path.name}；保留上一份分析结果")
+            return
+        signature = (stat.st_size, stat.st_mtime_ns)
+        if self.auto_parsed.get(key, (None,))[0] == signature:
+            return
+        self.auto_parse_pending.add(key)
+        self.auto_parse_failed.pop(key, None)
+        self.auto_import_generation += 1
+        order = (stat.st_mtime_ns, self.auto_import_generation)
+        self.auto_latest_order = max(self.auto_latest_order, order)
+        if order == self.auto_latest_order:
+            self.import_status.setText(f"正在解析已验证存档：{path.name}")
+
+        def ready(record: SaveRecord) -> None:
+            if self._closing:
+                return
+            self.database.import_record(record)
+            cached = self.records.get(record.fingerprint)
+            if cached is not None:
+                cached.path = record.path
+                record = cached
+            self.records[record.fingerprint] = record
+            self.auto_parsed[key] = (signature, record.fingerprint)
+            if self.save_combo.findData(record.fingerprint) < 0:
+                self.save_combo.blockSignals(True)
+                self.save_combo.addItem(f"{record.game_date} — {record.path.name}", record.fingerprint)
+                self.save_combo.blockSignals(False)
+            if order == self.auto_latest_order:
+                self.save_combo.blockSignals(True)
+                self.save_combo.setCurrentIndex(self.save_combo.findData(record.fingerprint))
+                self.save_combo.blockSignals(False)
+                self._show_record(record)
+            self.archive_log.append(f"自动解析完成：{path.name}（{record.game_date}）")
+
+        def failed(trace: str) -> None:
+            self.auto_parse_failed[key] = signature
+            summary = trace.strip().splitlines()[-1] if trace.strip() else "未知错误"
+            self.archive_log.append(f"自动解析失败：{path.name}：{summary}；源文件保留，可重新读取")
+            if order == self.auto_latest_order:
+                self.import_status.setText(f"自动解析失败：{path.name}；保留上一份分析结果")
+            LOGGER.error("自动解析失败：%s\n%s", path, trace)
+
+        def finished() -> None:
+            self.auto_parse_pending.discard(key)
+            QTimer.singleShot(0, self._scan_auto_archive)
+
         self._run_worker(
             parse_save,
-            self._auto_archive_imported,
+            ready,
             path,
             include_all_countries=True,
+            on_error=failed,
+            on_finished=finished,
         )
 
     def _choose_saves(self) -> None:
@@ -1686,14 +1796,17 @@ class MainWindow(QMainWindow):
         if countries:
             preferred_tag = (
                 previously_selected_tag
-                if previously_selected_tag in record.countries
-                else record.local_player_tag or countries[0].tag
+                if previously_selected_tag in record.existing_tags
+                else record.local_player_tag
+                if record.local_player_tag in record.existing_tags
+                else next(iter(self._mini_player_tags()), None)
             )
             self.selected_country_tag = preferred_tag
             self._country_selection_changed()
         else:
             self.selected_country_tag = None
             self.alert_text.clear()
+        self._update_mini_window()
         self._refresh_player_alert_overview()
         if self.provinces:
             self._render_map()
@@ -1707,7 +1820,7 @@ class MainWindow(QMainWindow):
             selected = self.current_record.countries.get(self.selected_country_tag)
             if selected is not None:
                 return selected
-        return next(iter(self.current_record.countries.values()), None)
+        return None
 
     def _country_selection_changed(self) -> None:
         if self.sender() is self.country_table:
@@ -1719,6 +1832,7 @@ class MainWindow(QMainWindow):
             self.alert_text.clear()
             self.sidebar_country.setText("尚未选择国家")
             self.sidebar_flag.clear()
+            self._update_mini_window()
             return
         alerts = economic_alerts(country)
         self.map_country_combo.blockSignals(True)
@@ -2084,6 +2198,7 @@ class MainWindow(QMainWindow):
         self.provinces = provinces
         self.map_status.setText(f"已加载 {len(provinces)} 个省份")
         self._render_map()
+        self._update_mini_window()
 
     def _map_clicked(self, scene_position: QPointF) -> None:
         if self.current_record is None:
@@ -2831,7 +2946,6 @@ class MainWindow(QMainWindow):
             if (
                 success
                 and response.get("save_path")
-                and not self.auto_archive_checkbox.isChecked()
             ):
                 self._import_verified_save(str(response["save_path"]))
 

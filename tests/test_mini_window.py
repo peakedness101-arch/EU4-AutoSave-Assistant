@@ -81,6 +81,7 @@ def make_record() -> SaveRecord:
         players=[PlayerCountry("Alice", "ENG"), PlayerCountry("Bob", "FRA")],
         countries={"ENG": england, "FRA": france},
         multiplayer=True,
+        province_owners={1: "ENG", 2: "FRA"},
     )
 
 
@@ -194,6 +195,7 @@ def test_reparse_falls_back_when_monitored_country_no_longer_exists(
 def test_mini_window_switches_only_multiplayer_player_countries(window: MainWindow) -> None:
     record = make_record()
     record.countries["SPA"] = CountrySnapshot(tag="SPA", treasury=999)
+    record.province_owners[3] = "SPA"
     window.current_record = record
     window.map_country_combo.clear()
     for tag in ("ENG", "FRA", "SPA"):

@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$ReleaseVersion = '1.3'
+    [string]$ReleaseVersion = '1.4'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -182,6 +182,9 @@ $Manifest = [ordered]@{
         'preserve_monitored_country'
         'automatic_directory_detection'
         'country_monarch_global_flags'
+        'existing_player_country_monitoring'
+        'local_player_regiment_concentration_warnings'
+        'parse_before_automatic_archive'
     )
     generated_at = (Get-Date).ToString('o')
     size_bytes = [int64]$ReleaseBytes

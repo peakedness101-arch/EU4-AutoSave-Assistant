@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from .models import (
+    ActiveWarSnapshot,
     ArmySnapshot,
     CountrySnapshot,
     LoanSnapshot,
@@ -49,6 +50,46 @@ def _decode_player_name(value: bytes) -> str:
         return value.decode("utf-8")
     except UnicodeDecodeError:
         return value.decode("utf-8", errors="backslashreplace")
+
+
+def _decode_province_name(value: bytes) -> str:
+    """Decode UTF-8/Western names and the EU4dll double-byte escape format.
+
+    Format reference: matanki-saito/EU4dll, Plugin64/escape_tool.cpp,
+    convertEscapedTextToWideText (https://github.com/matanki-saito/EU4dll).
+    Invalid names are left empty so the UI can use the game/Mod index.
+    """
+    parts: list[str] = []
+    cursor = 0
+    plain_start = 0
+    while cursor < len(value):
+        marker = value[cursor]
+        if marker not in (0x10, 0x11, 0x12, 0x13):
+            cursor += 1
+            continue
+        plain = value[plain_start:cursor]
+        try:
+            parts.append(plain.decode("utf-8"))
+        except UnicodeDecodeError:
+            parts.append(plain.decode("cp1252", errors="replace"))
+        if cursor + 2 >= len(value):
+            return ""
+        point = int.from_bytes(value[cursor + 1:cursor + 3], "little")
+        point += {0x10: 0, 0x11: -0xE, 0x12: 0x900, 0x13: 0x8F2}[marker]
+        if 0xE100 < point < 0xEA00:
+            point -= 0xE000
+        if point < 0x20 or point > 0xFFFF or 0xD800 <= point <= 0xDFFF:
+            return ""
+        parts.append(chr(point))
+        cursor += 3
+        plain_start = cursor
+    plain = value[plain_start:]
+    try:
+        parts.append(plain.decode("utf-8"))
+    except UnicodeDecodeError:
+        parts.append(plain.decode("cp1252", errors="replace"))
+    result = "".join(parts)
+    return result if not any(ord(char) < 0x20 or char == "\ufffd" for char in result) else ""
 
 
 def _matching_brace(data: bytes, open_index: int, limit: int | None = None) -> int:
@@ -284,7 +325,9 @@ def _parse_players(gamestate: bytes) -> list[PlayerCountry]:
     return players
 
 
-def _parse_province_state(gamestate: bytes) -> tuple[dict[int, str], dict[int, str]]:
+def _parse_province_state(
+    gamestate: bytes,
+) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
     """Read current province ownership/control without parsing nested history.
 
     EU4 serializes province ids as negative top-level keys in 1.37 saves.  The
@@ -293,7 +336,7 @@ def _parse_province_state(gamestate: bytes) -> tuple[dict[int, str], dict[int, s
     """
     marker = re.search(rb"(?m)^provinces=\{", gamestate)
     if marker is None:
-        return {}, {}
+        return {}, {}, {}
     # In EU4 1.37 the next large top-level block is countries.  Slicing at its
     # marker avoids a byte-by-byte brace walk across tens of megabytes.
     countries_start = gamestate.find(b"\ncountries={", marker.end())
@@ -305,15 +348,20 @@ def _parse_province_state(gamestate: bytes) -> tuple[dict[int, str], dict[int, s
                 gamestate, gamestate.find(b"{", marker.start())
             )
         except SaveParseError:
-            return {}, {}
+            return {}, {}, {}
     matches = list(_PROVINCE_HEADER_RE.finditer(gamestate, province_start, province_end))
     owners: dict[int, str] = {}
     controllers: dict[int, str] = {}
+    names: dict[int, str] = {}
     for index, match in enumerate(matches):
         province_id = int(match.group(1))
         if province_id <= 0:
             continue
         end = matches[index + 1].start() if index + 1 < len(matches) else province_end
+        province = gamestate[match.end() : end]
+        name = _decode_province_name(_scalar_bytes(province, b"name", 2) or b"")
+        if name:
+            names[province_id] = name
         owner = re.search(
             rb'(?m)^\t\towner="?([A-Z0-9]{3})"?\s*$',
             gamestate[match.end() : end],
@@ -326,7 +374,25 @@ def _parse_province_state(gamestate: bytes) -> tuple[dict[int, str], dict[int, s
         )
         if controller:
             controllers[province_id] = controller.group(1).decode("ascii")
-    return owners, controllers
+    return owners, controllers, names
+
+
+def _parse_active_wars(gamestate: bytes) -> list[ActiveWarSnapshot]:
+    wars: list[ActiveWarSnapshot] = []
+    for block in _direct_blocks(gamestate, b"active_war", 0):
+        sides: list[set[str]] = []
+        for key in (b"attackers", b"defenders"):
+            side = _direct_block(block, key, 1)
+            if side is None:
+                raise SaveParseError("当前战争缺少双方名单，无法可靠判断敌对关系。")
+            body = side[side.find(b"{") + 1 : side.rfind(b"}")]
+            sides.append({
+                token.strip(b'"').decode("ascii")
+                for token in body.split()
+                if _TAG_RE.fullmatch(token.strip(b'"'))
+            })
+        wars.append(ActiveWarSnapshot(*sides))
+    return wars
 
 
 INCOME_KEYS = (
@@ -685,7 +751,7 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
     except SaveParseError:
         global_flags = set()
 
-    province_owners, province_controllers = _parse_province_state(gamestate)
+    province_owners, province_controllers, province_names = _parse_province_state(gamestate)
     return SaveRecord(
         path=save_path.resolve(),
         fingerprint=fingerprint,
@@ -703,4 +769,6 @@ def parse_save(path: str | Path, include_all_countries: bool = False) -> SaveRec
         global_flags=global_flags,
         province_owners=province_owners,
         province_controllers=province_controllers,
+        province_names=province_names,
+        active_wars=_parse_active_wars(gamestate),
     )

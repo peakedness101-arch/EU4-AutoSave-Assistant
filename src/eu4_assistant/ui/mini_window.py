@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -175,6 +177,25 @@ class MiniCountryWindow(QWidget):
             self.icon_labels[key] = icon
         root.addLayout(grid)
 
+        self.warning_title = QLabel()
+        self.warning_title.setObjectName("miniWarningTitle")
+        self.warning_title.setWordWrap(True)
+        root.addWidget(self.warning_title)
+        self.warning_text = QLabel()
+        self.warning_text.setTextFormat(Qt.TextFormat.PlainText)
+        self.warning_text.setWordWrap(True)
+        self.warning_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        self.warning_text.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.warning_scroll = QScrollArea()
+        self.warning_scroll.setWidgetResizable(True)
+        self.warning_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.warning_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.warning_scroll.setFixedHeight(116)
+        self.warning_scroll.setWidget(self.warning_text)
+        root.addWidget(self.warning_scroll)
+        self.warning_title.hide()
+        self.warning_scroll.hide()
+
         self.lock_hint = QLabel("已锁定：窗口已穿透，防止误触；用快捷键解锁")
         self.lock_hint.setObjectName("miniLockHint")
         self.lock_hint.hide()
@@ -204,6 +225,8 @@ class MiniCountryWindow(QWidget):
             QLabel#miniKey { color: #93a9bd; font-size: 12px; }
             QLabel#miniValue { color: white; font-size: 13px; font-weight: 600; }
             QLabel#miniLockHint { color: #fbbf24; font-size: 11px; }
+            QLabel#miniWarningTitle { color: #fbbf24; font-size: 12px; font-weight: 700; }
+            QScrollArea { background: transparent; border: none; }
             QPushButton {
                 background: rgba(255, 255, 255, 18);
                 border: 1px solid #4d6b82; border-radius: 4px;
@@ -249,6 +272,19 @@ class MiniCountryWindow(QWidget):
         }
         for key, text in values.items():
             self.stat_rows[key].setText(text)
+
+    def set_army_warnings(self, title: str, lines: list[str]) -> None:
+        self.warning_title.setText(title)
+        self.warning_title.setVisible(bool(title))
+        text = "\n".join(lines)
+        if text != self.warning_text.text():
+            self.warning_text.setText(text)
+            self.warning_text.setMinimumHeight(
+                self.warning_text.heightForWidth(max(240, self.width() - 40))
+            )
+            self.warning_scroll.verticalScrollBar().setValue(0)
+        self.warning_scroll.setVisible(bool(lines))
+        self.adjustSize()
 
     def set_switching_enabled(self, enabled: bool) -> None:
         for button in self.country_switch_buttons:

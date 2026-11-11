@@ -103,6 +103,7 @@ def test_flag_lists_show_global_country_and_current_monarch_flags(
         players=[],
         countries={"USA": country},
         global_flags={"world_beta", "world_alpha"},
+        province_owners={1: "USA"},
     )
     monkeypatch.setattr(window, "_ensure_map_index", lambda **_kwargs: None)
 
