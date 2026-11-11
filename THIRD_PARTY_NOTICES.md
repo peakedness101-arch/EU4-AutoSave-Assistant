@@ -21,3 +21,7 @@ Rakaly CLI 采用 MIT License。许可证全文保存在 `licenses/Rakaly.txt`�
 ## Europa Universalis IV
 
 Europa Universalis IV、相关商标以及游戏内图像和数据归 Paradox Interactive 所有。本仓库不包含原版游戏图像；运行时仅从用户本地安装目录读取界面图标和旗帜。
+
+## 中文理念组名称
+
+`data/idea_names_zh.json` 的译名摘自 Chinese Language Mod for 1.37（Steam Workshop 2976470733）；`gns_ideas` 的译名摘自 Europa Universalis Arena CN.Ver（3541030381）。文件内记录来源。运行时可由用户本机汉化补丁和 Mod 的中文本地化覆盖。

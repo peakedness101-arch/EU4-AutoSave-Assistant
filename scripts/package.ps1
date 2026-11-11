@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$ReleaseVersion = '1.4'
+    [string]$ReleaseVersion = '1.4.1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +42,7 @@ foreach ($required in @(
     (Join-Path $Workspace 'native\injector.cpp'),
     (Join-Path $Workspace 'native\launcher.cpp'),
     (Join-Path $Workspace 'data\country_names.html'),
+    (Join-Path $Workspace 'data\idea_names_zh.json'),
     (Join-Path $Workspace 'RELEASE_NOTES.txt'),
     $RakalyLicense
 )) {
@@ -146,12 +147,14 @@ if (Test-Path -LiteralPath (Join-Path $Workspace 'data\province_index.json')) {
 if (Test-Path -LiteralPath (Join-Path $Workspace 'data\map_cache')) {
     Copy-Item -LiteralPath (Join-Path $Workspace 'data\map_cache') -Destination $DataOutput -Recurse
 }
+Copy-Item -LiteralPath (Join-Path $Workspace 'data\idea_names_zh.json') -Destination $DataOutput
 Copy-Item -LiteralPath (Join-Path $Workspace 'data\country_names.html') -Destination $DataOutput
 Copy-Item -LiteralPath (Join-Path $Workspace 'README.md'),(Join-Path $Workspace '新用户使用指南.html'),(Join-Path $Workspace 'RELEASE_NOTES.txt') -Destination $StagedApp
 
 Copy-Item -LiteralPath (Join-Path $NativeBuildRoot 'EU4AutoSaveLauncher.exe') -Destination (Join-Path $StagedBundle 'EU4_AutoSave_Assistant.exe')
 Copy-Item -LiteralPath (Join-Path $Workspace 'README.md'),(Join-Path $Workspace '新用户使用指南.html'),(Join-Path $Workspace 'RELEASE_NOTES.txt'),(Join-Path $Workspace '版本说明.txt') -Destination $StagedBundle
 Copy-Item -LiteralPath (Join-Path $Workspace 'data\country_names.html') -Destination (Join-Path $StagedBundle '国家列表.html')
+Copy-Item -LiteralPath (Join-Path $Workspace 'THIRD_PARTY_NOTICES.md') -Destination $StagedBundle
 
 $ReleaseBytes = (Get-ChildItem -LiteralPath $StagedApp -Recurse -File | Measure-Object Length -Sum).Sum
 if ($ReleaseBytes -gt $MaximumReleaseBytes) {
@@ -185,6 +188,8 @@ $Manifest = [ordered]@{
         'existing_player_country_monitoring'
         'local_player_regiment_concentration_warnings'
         'parse_before_automatic_archive'
+        'fixed_mini_window_header'
+        'chinese_idea_group_names'
     )
     generated_at = (Get-Date).ToString('o')
     size_bytes = [int64]$ReleaseBytes
@@ -195,6 +200,7 @@ $Manifest = [ordered]@{
 $Manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $StagedApp 'release_manifest.json') -Encoding UTF8
 
 $Hashes = @(
+    ('{0}  release\EU4_AutoSave_Assistant\data\idea_names_zh.json' -f (Get-FileHash -LiteralPath (Join-Path $DataOutput 'idea_names_zh.json') -Algorithm SHA256).Hash)
     ('{0}  EU4_AutoSave_Assistant.exe' -f (Get-FileHash -LiteralPath (Join-Path $StagedBundle 'EU4_AutoSave_Assistant.exe') -Algorithm SHA256).Hash)
     ('{0}  release\EU4_AutoSave_Assistant\EU4_AutoSave_Assistant.exe' -f (Get-FileHash -LiteralPath (Join-Path $StagedApp 'EU4_AutoSave_Assistant.exe') -Algorithm SHA256).Hash)
     ('{0}  release\EU4_AutoSave_Assistant\native\rakaly.exe' -f (Get-FileHash -LiteralPath (Join-Path $NativeOutput 'rakaly.exe') -Algorithm SHA256).Hash)

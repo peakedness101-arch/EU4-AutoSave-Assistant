@@ -4,7 +4,7 @@ import ctypes
 import os
 from ctypes import wintypes
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -70,6 +70,37 @@ if _USER32 is not None:
     _USER32.SetWindowPos.restype = wintypes.BOOL
 
 
+class _ElidedTitleLabel(QLabel):
+    """Keep long player names out of the header's geometry calculation."""
+
+    def __init__(self, text: str):
+        self._full_text = ""
+        super().__init__()
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text
+        self.setToolTip(text)
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        super().setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, self.contentsRect().width()
+        ))
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._refresh_text()
+
+
 class MiniCountryWindow(QWidget):
     """Floating, always-on-top HUD showing coarse country economy and forces."""
 
@@ -90,7 +121,9 @@ class MiniCountryWindow(QWidget):
         self.setObjectName("miniWindow")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setMinimumWidth(272)
+        # Qt scales these logical pixels with DPI; content must not move the
+        # country-switch controls while the user is clicking through players.
+        self.setFixedWidth(400)
         self._game_dir = game_dir
         self._mod_dir = mod_dir
         self._locked = False
@@ -121,7 +154,7 @@ class MiniCountryWindow(QWidget):
         self.flag_label = QLabel()
         self.flag_label.setFixedSize(26, 26)
         self.flag_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title_label = QLabel("未选择国家")
+        self.title_label = _ElidedTitleLabel("未选择国家")
         self.title_label.setObjectName("miniTitle")
         header.addWidget(self.flag_label)
         header.addWidget(self.title_label, 1)
@@ -197,6 +230,7 @@ class MiniCountryWindow(QWidget):
         self.warning_scroll.hide()
 
         self.lock_hint = QLabel("已锁定：窗口已穿透，防止误触；用快捷键解锁")
+        self.lock_hint.setWordWrap(True)
         self.lock_hint.setObjectName("miniLockHint")
         self.lock_hint.hide()
         root.addWidget(self.lock_hint)

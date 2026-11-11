@@ -253,3 +253,46 @@ def test_mini_window_reopens_at_last_hidden_position(
     application.processEvents()
     assert window.mini_window.pos().x() == 321
     assert window.mini_window.pos().y() == 234
+
+
+def test_country_switch_buttons_stay_fixed_for_different_player_names(
+    window: MainWindow, application: QApplication
+) -> None:
+    from PySide6.QtTest import QTest
+
+    record = make_record()
+    window.current_record = record
+    window.selected_country_tag = "ENG"
+    window._mini_toggle_window()
+    mini = window.mini_window
+    application.processEvents()
+    expected_width = mini.width()
+    expected_buttons = [button.geometry() for button in mini.country_switch_buttons]
+    assert expected_width == 400
+    for name in ["A", "很长的玩家昵称" * 20, "Player_" * 60, "<b>Player</b>"]:
+        record.countries["FRA"].player_name = name
+        # Click at the same coordinates after every switch, as a user does.
+        for target in ["FRA", "ENG"]:
+            QTest.mouseClick(mini.country_switch_buttons[1], Qt.MouseButton.LeftButton)
+            application.processEvents()
+            assert window.selected_country_tag == target
+            assert mini.width() == expected_width
+            assert [button.geometry() for button in mini.country_switch_buttons] == expected_buttons
+        window.selected_country_tag = "FRA"
+        window._update_mini_window()
+        application.processEvents()
+        assert mini.title_label.toolTip() == f"FRA · {name}"
+        assert mini.title_label.fontMetrics().horizontalAdvance(mini.title_label.text()) <= mini.title_label.width()
+        window.selected_country_tag = "ENG"
+        window._update_mini_window()
+    window._mini_toggle_lock()
+    application.processEvents()
+    assert mini.width() == expected_width
+    assert [button.geometry() for button in mini.country_switch_buttons] == expected_buttons
+    window._mini_toggle_window()
+    record.countries["ENG"].player_name = "Very long name " * 50
+    record.countries["ENG"].treasury = 123456789
+    window._mini_toggle_window()
+    application.processEvents()
+    assert mini.width() == expected_width
+    assert [button.geometry() for button in mini.country_switch_buttons] == expected_buttons

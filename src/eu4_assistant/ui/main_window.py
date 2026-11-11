@@ -77,6 +77,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..alerts import army_concentration_warnings, economic_alerts
+from ..localization import idea_group_name
 from ..army_markers import aggregate_armies_by_province, compact_army_strength
 from ..archive import (
     archive_many,
@@ -539,6 +540,7 @@ class MainWindow(QMainWindow):
         idea_group = QGroupBox("理念情况")
         idea_layout = QVBoxLayout(idea_group)
         self.detail_ideas = QLabel("—")
+        self.detail_ideas.setTextFormat(Qt.TextFormat.PlainText)
         self.detail_ideas.setWordWrap(True)
         idea_layout.addWidget(self.detail_ideas)
         content_layout.addWidget(idea_group)
@@ -1994,12 +1996,14 @@ class MainWindow(QMainWindow):
         if country.ideas:
             self.detail_ideas.setText(
                 "　".join(
-                    f"{name}：{value}/7"
+                    f"{idea_group_name(name, self.config.game_dir, self._active_mod_dir())}：{value}/7"
                     for name, value in sorted(country.ideas.items())
                 )
             )
+            self.detail_ideas.setToolTip("　".join(sorted(country.ideas)))
         else:
             self.detail_ideas.setText("存档未记录已启用理念组。")
+            self.detail_ideas.setToolTip("")
 
         self._render_breakdown_pie(
             self.detail_income_chart,
