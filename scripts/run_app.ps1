@@ -6,7 +6,7 @@ if (-not (Test-Path -LiteralPath $Python)) {
 }
 Push-Location $ProjectRoot
 try {
-    & $Python -m eu4_assistant.app
+    & $Python -m eu4_assistant.app @args
     $ExitCode = $LASTEXITCODE
 }
 finally {

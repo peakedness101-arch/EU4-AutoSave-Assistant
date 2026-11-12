@@ -54,6 +54,7 @@ def test_world_map_is_the_only_main_page(window: MainWindow) -> None:
         "archive",
         "compare",
         "calculator",
+        "timetable",
         "settings",
     }
     assert all(not dialog.isModal() for dialog in window.tool_dialogs.values())

@@ -28,6 +28,7 @@ def isolate_ui_runtime(monkeypatch, tmp_path):
     import eu4_assistant.ui.main_window as module
 
     original = module.load_config
+    monkeypatch.setattr(module, "PROJECT_ROOT", tmp_path)
     saves = tmp_path / "ui_saves"
     saves.mkdir()
     monkeypatch.setattr(module, "load_config", lambda: replace(

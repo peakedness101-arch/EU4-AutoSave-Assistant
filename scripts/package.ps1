@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$ReleaseVersion = '1.4.1'
+    [string]$ReleaseVersion = '1.5.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -190,6 +190,9 @@ $Manifest = [ordered]@{
         'parse_before_automatic_archive'
         'fixed_mini_window_header'
         'chinese_idea_group_names'
+        'game_timetable_memos'
+        'json_timetable_import_export'
+        'explicit_date_stepper_buttons'
     )
     generated_at = (Get-Date).ToString('o')
     size_bytes = [int64]$ReleaseBytes

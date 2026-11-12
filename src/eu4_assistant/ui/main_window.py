@@ -78,6 +78,8 @@ from PySide6.QtWidgets import (
 
 from ..alerts import army_concentration_warnings, economic_alerts
 from ..localization import idea_group_name
+from ..timetable import GameDate, TimetableStore, due_entries, parse_game_date
+from .timetable import TimetablePanel
 from ..army_markers import aggregate_armies_by_province, compact_army_strength
 from ..archive import (
     archive_many,
@@ -239,6 +241,10 @@ class MainWindow(QMainWindow):
         self.scheduler = AutosaveScheduler(self.config.autosave_mode, now=time.monotonic())
         self.save_request_busy = False
         self.last_bridge_game_date: str | None = None
+        self.timetable_live_date: GameDate | None = None
+        self.timetable_store = TimetableStore(PROJECT_ROOT / "config" / "timetable.json")
+        if self.timetable_store.load_error:
+            LOGGER.warning("时间表读取失败，原文件保留：%s", self.timetable_store.load_error)
         self.bridge_poll_busy = False
         self.compare_records: list[SaveRecord] = []
         self.auto_archive_busy = False
@@ -288,6 +294,10 @@ class MainWindow(QMainWindow):
         self._build_compare_tab()
         self._build_calculator_tab()
         self._build_settings_tab()
+        self.timetable_panel = TimetablePanel(self.timetable_store)
+        self.timetable_panel.changed.connect(self._refresh_timetable)
+        self._register_tool_dialog("timetable", "时间表", self.timetable_panel, (880, 640))
+        self._refresh_timetable()
         self._apply_theme()
         self._refresh_game_art()
         self._refresh_version_status()
@@ -415,6 +425,7 @@ class MainWindow(QMainWindow):
             ("archive", "归档与改名"),
             ("compare", "多存档对比"),
             ("calculator", "贷款计算器"),
+            ("timetable", "时间表"),
             ("settings", "设置与诊断"),
         ]:
             button = QPushButton(label)
@@ -443,7 +454,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.addWidget(content)
         self.tool_dialogs[key] = dialog
-        if key != "settings":
+        if key not in {"settings", "timetable"}:
             self.analysis_dialogs.append(dialog)
 
     def _show_tool_dialog(self, key: str) -> None:
@@ -1336,6 +1347,7 @@ class MainWindow(QMainWindow):
         return tags
 
     def _update_mini_window(self) -> None:
+        self._refresh_timetable()
         if self.mini_window is not None and self.mini_window.isVisible():
             country = self._selected_country()
             record = self.current_record
@@ -1365,6 +1377,39 @@ class MainWindow(QMainWindow):
                     + (f"⚠ 军队集中警告（{len(warnings)}）" if warnings else "军队集中：无警告"),
                     lines,
                 )
+
+    def _timetable_date(self) -> tuple[GameDate | None, str]:
+        if self.timetable_live_date is not None:
+            return self.timetable_live_date, "实时游戏"
+        if self.current_record is not None:
+            try:
+                return parse_game_date(self.current_record.game_date), "存档预览"
+            except ValueError:
+                pass
+        return None, "尚无可用游戏日期"
+
+    def _refresh_timetable(self) -> None:
+        if not hasattr(self, "timetable_panel"):
+            return
+        date, source = self._timetable_date()
+        self.timetable_panel.date_status.setText(
+            f"判定日期：{date}（{source}）" if date is not None else "判定日期：尚无可用游戏日期"
+        )
+        if self.mini_window is not None and self.mini_window.isVisible():
+            entries = due_entries(self.timetable_store.entries, date)
+            self.mini_window.set_timetable_reminders(
+                f"时间表 · {date}（{source}）" if entries else "",
+                [f"{entry.date}\n{entry.note}" for entry in entries],
+            )
+
+    def _update_timetable_clock(self, status) -> None:
+        self.timetable_live_date = None
+        if status.connected and status.game_loaded and status.synchronized:
+            try:
+                self.timetable_live_date = parse_game_date(status.game_date)
+            except ValueError:
+                pass
+        self._refresh_timetable()
 
     def _unsupported_option_toggled(self, checked: bool) -> None:
         if checked:
@@ -2851,6 +2896,8 @@ class MainWindow(QMainWindow):
         self.first_run_settings_notice.hide()
         self.archive_destination.setText(self.config.archive_dir)
         self.bridge.close()
+        self.timetable_live_date = None
+        self._refresh_timetable()
         self.bridge = BridgeClient(
             self.config.game_dir,
             allow_unsupported_version=self.config.allow_unsupported_version,
@@ -2883,11 +2930,21 @@ class MainWindow(QMainWindow):
         self._run_worker(
             self.bridge.status,
             self._bridge_status_ready,
+            on_error=self._bridge_poll_failed,
             on_finished=lambda: setattr(self, "bridge_poll_busy", False),
         )
 
+    def _bridge_poll_failed(self, trace: str) -> None:
+        self.timetable_live_date = None
+        self.last_bridge_game_date = None
+        self._refresh_timetable()
+        self.bridge_label.setText("原生桥：读取失败；时间表使用存档预览（若有）")
+        LOGGER.error("原生桥状态读取失败：%s", trace)
+
     def _bridge_status_ready(self, status) -> None:
+        self._update_timetable_clock(status)
         if not status.connected:
+            self.last_bridge_game_date = None
             self.bridge_label.setText(f"原生桥：不可用 — {status.message}")
             return
         self.last_bridge_game_date = status.game_date
@@ -2901,6 +2958,7 @@ class MainWindow(QMainWindow):
         self.bridge_label.setText("原生桥：正在检测并加载…")
 
         def done(status):
+            self._update_timetable_clock(status)
             self.bridge_label.setText(
                 "原生桥：已连接" if status.connected else f"原生桥：不可用 — {status.message}"
             )

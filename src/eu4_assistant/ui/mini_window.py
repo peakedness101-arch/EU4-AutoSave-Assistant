@@ -229,6 +229,26 @@ class MiniCountryWindow(QWidget):
         self.warning_title.hide()
         self.warning_scroll.hide()
 
+        self.timetable_title = QLabel()
+        self.timetable_title.setWordWrap(True)
+        self.timetable_title.setTextFormat(Qt.TextFormat.PlainText)
+        self.timetable_title.setObjectName("miniTimetableTitle")
+        root.addWidget(self.timetable_title)
+        self.timetable_text = QLabel()
+        self.timetable_text.setWordWrap(True)
+        self.timetable_text.setTextFormat(Qt.TextFormat.PlainText)
+        self.timetable_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        self.timetable_text.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.timetable_scroll = QScrollArea()
+        self.timetable_scroll.setWidgetResizable(True)
+        self.timetable_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.timetable_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.timetable_scroll.setFixedHeight(132)
+        self.timetable_scroll.setWidget(self.timetable_text)
+        root.addWidget(self.timetable_scroll)
+        self.timetable_title.hide()
+        self.timetable_scroll.hide()
+
         self.lock_hint = QLabel("已锁定：窗口已穿透，防止误触；用快捷键解锁")
         self.lock_hint.setWordWrap(True)
         self.lock_hint.setObjectName("miniLockHint")
@@ -260,6 +280,7 @@ class MiniCountryWindow(QWidget):
             QLabel#miniValue { color: white; font-size: 13px; font-weight: 600; }
             QLabel#miniLockHint { color: #fbbf24; font-size: 11px; }
             QLabel#miniWarningTitle { color: #fbbf24; font-size: 12px; font-weight: 700; }
+            QLabel#miniTimetableTitle { color: #7dd3fc; font-size: 12px; font-weight: 700; }
             QScrollArea { background: transparent; border: none; }
             QPushButton {
                 background: rgba(255, 255, 255, 18);
@@ -318,6 +339,19 @@ class MiniCountryWindow(QWidget):
             )
             self.warning_scroll.verticalScrollBar().setValue(0)
         self.warning_scroll.setVisible(bool(lines))
+        self.adjustSize()
+
+    def set_timetable_reminders(self, title: str, lines: list[str]) -> None:
+        text = "\n\n".join(lines)
+        if text != self.timetable_text.text():
+            self.timetable_text.setText(text)
+            self.timetable_text.setMinimumHeight(
+                max(0, self.timetable_text.heightForWidth(self.width() - 40))
+            )
+            self.timetable_scroll.verticalScrollBar().setValue(0)
+        self.timetable_title.setText(title)
+        self.timetable_title.setVisible(bool(lines))
+        self.timetable_scroll.setVisible(bool(lines))
         self.adjustSize()
 
     def set_switching_enabled(self, enabled: bool) -> None:
